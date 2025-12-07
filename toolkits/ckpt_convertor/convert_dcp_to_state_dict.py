@@ -44,7 +44,7 @@ if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as temp_dir:
         dcp_to_torch_save(args.dcp_path, os.path.join(temp_dir, "temp_torch_save.pt"))
         temp_pt = torch.load(os.path.join(temp_dir, "temp_torch_save.pt"))
-        model_state_dict = temp_pt["model"]
+        model_state_dict = temp_pt["fsdp_checkpoint"]
         torch.save(model_state_dict, args.output_path)
 
     print(
