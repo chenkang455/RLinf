@@ -1193,6 +1193,7 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
             "reward_type": self.cfg.algorithm.reward_type,
             "loss_mask": self.rollout_batch.get("loss_mask", None),
             "loss_mask_sum": self.rollout_batch.get("loss_mask_sum", None),
+            "nft_clip_range": self.cfg.algorithm.get("nft_clip_range", 3.0),
         }
 
         advantages_and_returns = calculate_adv_and_returns(**kwargs)
@@ -1293,6 +1294,45 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
                 f"sft_loss_weight={self.sft_loss_weight:.6f}"
             )
 
+    def _nft_precompute_v_old(self) -> None:
+        """
+        Precompute v_old (reference velocity) for DiffusionNFT before training updates.
+
+        At this point model weights == rollout model weights (no gradient updates yet).
+        For each sample, samples time/noise and computes v_old, storing results in
+        rollout_batch["forward_inputs"] for use during training.
+        """
+        forward_inputs_list = self.rollout_batch.get("forward_inputs", None)
+        if forward_inputs_list is None:
+            return
+
+        total_samples = forward_inputs_list["nft_actions"].shape[0]
+        micro_bs = self.cfg.actor.micro_batch_size
+
+        all_v_old = []
+        all_time = []
+        all_noise = []
+
+        self.model.train()
+        with torch.no_grad(), self.amp_context:
+            for start in range(0, total_samples, micro_bs):
+                end = min(start + micro_bs, total_samples)
+                micro_fi = {
+                    k: v[start:end].to(self.device) if torch.is_tensor(v) else v
+                    for k, v in forward_inputs_list.items()
+                }
+                ref_out = self.model(
+                    forward_type=ForwardType.NFT_PRECOMPUTE,
+                    forward_inputs=micro_fi,
+                )
+                all_v_old.append(ref_out["nft_v_old"].cpu())
+                all_time.append(ref_out["nft_time"].cpu())
+                all_noise.append(ref_out["nft_noise"].cpu())
+
+        self.rollout_batch["forward_inputs"]["nft_v_old"] = torch.cat(all_v_old, dim=0)
+        self.rollout_batch["forward_inputs"]["nft_time"] = torch.cat(all_time, dim=0)
+        self.rollout_batch["forward_inputs"]["nft_noise"] = torch.cat(all_noise, dim=0)
+
     @Worker.timer("run_training")
     def run_training(self) -> None:
         """
@@ -1304,6 +1344,9 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
             self.load_optimizer(self.device)
 
         self.model.train()
+
+        is_nft = self.cfg.algorithm.loss_type == "nft"
+
         rollout_size = (
             self.rollout_batch["prev_logprobs"].shape[0]
             * self.rollout_batch["prev_logprobs"].shape[1]
@@ -1316,6 +1359,8 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
             self.rollout_batch = process_nested_dict_for_train(
                 self.rollout_batch, shuffle_id
             )
+        if is_nft:
+            self._nft_precompute_v_old()
 
         assert (
             self.cfg.actor.global_batch_size
@@ -1394,67 +1439,90 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
                     ):
                         kwargs["prev_logprobs"] = prev_logprobs
 
-                    compute_values = (
-                        True if self.cfg.algorithm.adv_type == "gae" else False
-                    )
+                    if is_nft:
+                        # DiffusionNFT: LoRA adapter switching for v_old/v_theta
+                        with self.amp_context:
+                            output_dict = self.model(
+                                forward_type=ForwardType.NFT,
+                                forward_inputs=forward_inputs,
+                            )
 
-                    with self.amp_context:
-                        output_dict = self.model(
-                            forward_inputs=forward_inputs,
-                            compute_logprobs=True,
-                            compute_entropy=self.cfg.algorithm.entropy_bonus > 0,
-                            compute_values=compute_values,
-                            use_cache=False,
-                            **kwargs,
+                        bsz = output_dict["pos_err"].shape[0]
+                        loss, metrics_data = policy_loss(
+                            loss_type="nft",
+                            pos_err=output_dict["pos_err"],
+                            neg_err=output_dict["neg_err"],
+                            delta_v_norm=output_dict["delta_v_norm"],
+                            v_old_norm=output_dict["v_old_norm"],
+                            drift_clip_frac=output_dict["drift_clip_frac"],
+                            advantages=advantages.flatten()[:bsz],
+                            loss_mask=loss_mask.flatten()[:bsz] if loss_mask is not None else None,
+                            task_type=self.cfg.runner.task_type,
+                        )
+                        metrics_data["actor/entropy_loss"] = 0.0
+                    else:
+                        # Standard PPO/GRPO mode
+                        compute_values = (
+                            True if self.cfg.algorithm.adv_type == "gae" else False
                         )
 
-                    if (
-                        SupportedModel(self.cfg.actor.model.model_type)
-                        == SupportedModel.GR00T
-                    ):
-                        prev_logprobs = output_dict["prev_logprobs"]
+                        with self.amp_context:
+                            output_dict = self.model(
+                                forward_inputs=forward_inputs,
+                                compute_logprobs=True,
+                                compute_entropy=self.cfg.algorithm.entropy_bonus > 0,
+                                compute_values=compute_values,
+                                use_cache=False,
+                                **kwargs,
+                            )
 
-                    kwargs = {
-                        "loss_type": self.cfg.algorithm.loss_type,
-                        "logprob_type": self.cfg.algorithm.logprob_type,
-                        "reward_type": self.cfg.algorithm.reward_type,
-                        "single_action_dim": self.cfg.actor.model.get("action_dim", 7),
-                        "logprobs": output_dict["logprobs"],
-                        "values": output_dict.get("values", None),
-                        "old_logprobs": prev_logprobs,
-                        "advantages": advantages,
-                        "returns": returns,
-                        "prev_values": prev_values,
-                        "clip_ratio_high": self.cfg.algorithm.clip_ratio_high,
-                        "clip_ratio_low": self.cfg.algorithm.clip_ratio_low,
-                        "value_clip": self.cfg.algorithm.get("value_clip", None),
-                        "huber_delta": self.cfg.algorithm.get("huber_delta", None),
-                        "loss_mask": loss_mask,
-                        "loss_mask_sum": loss_mask_sum,
-                        "max_episode_steps": self.cfg.env.train.max_episode_steps,
-                        "task_type": self.cfg.runner.task_type,
-                        "critic_warmup": self.optimizer_steps
-                        < self.critic_warmup_steps,
-                    }
-                    loss, metrics_data = policy_loss(**kwargs)
+                        if (
+                            SupportedModel(self.cfg.actor.model.model_type)
+                            == SupportedModel.GR00T
+                        ):
+                            prev_logprobs = output_dict["prev_logprobs"]
 
-                    entropy_loss = torch.tensor(
-                        0.0, device=Worker.torch_platform.current_device()
-                    )
-                    if (
-                        self.cfg.algorithm.entropy_bonus > 0
-                        and not kwargs["critic_warmup"]
-                    ):
-                        entropy = output_dict["entropy"]
-                        entropy = reshape_entropy(
-                            entropy,
-                            entropy_type=self.cfg.algorithm.entropy_type,
-                            action_dim=self.cfg.actor.model.get("action_dim", 7),
-                            batch_size=output_dict["logprobs"].shape[0],
+                        kwargs = {
+                            "loss_type": self.cfg.algorithm.loss_type,
+                            "logprob_type": self.cfg.algorithm.logprob_type,
+                            "reward_type": self.cfg.algorithm.reward_type,
+                            "single_action_dim": self.cfg.actor.model.get("action_dim", 7),
+                            "logprobs": output_dict["logprobs"],
+                            "values": output_dict.get("values", None),
+                            "old_logprobs": prev_logprobs,
+                            "advantages": advantages,
+                            "returns": returns,
+                            "prev_values": prev_values,
+                            "clip_ratio_high": self.cfg.algorithm.clip_ratio_high,
+                            "clip_ratio_low": self.cfg.algorithm.clip_ratio_low,
+                            "value_clip": self.cfg.algorithm.get("value_clip", None),
+                            "huber_delta": self.cfg.algorithm.get("huber_delta", None),
+                            "loss_mask": loss_mask,
+                            "loss_mask_sum": loss_mask_sum,
+                            "max_episode_steps": self.cfg.env.train.max_episode_steps,
+                            "task_type": self.cfg.runner.task_type,
+                            "critic_warmup": self.optimizer_steps
+                            < self.critic_warmup_steps,
+                        }
+                        loss, metrics_data = policy_loss(**kwargs)
+
+                        entropy_loss = torch.tensor(
+                            0.0, device=Worker.torch_platform.current_device()
                         )
-                        entropy_loss = masked_mean(entropy, mask=loss_mask)
-                        loss -= self.cfg.algorithm.entropy_bonus * entropy_loss
-                    metrics_data["actor/entropy_loss"] = entropy_loss.detach().item()
+                        if (
+                            self.cfg.algorithm.entropy_bonus > 0
+                            and not kwargs["critic_warmup"]
+                        ):
+                            entropy = output_dict["entropy"]
+                            entropy = reshape_entropy(
+                                entropy,
+                                entropy_type=self.cfg.algorithm.entropy_type,
+                                action_dim=self.cfg.actor.model.get("action_dim", 7),
+                                batch_size=output_dict["logprobs"].shape[0],
+                            )
+                            entropy_loss = masked_mean(entropy, mask=loss_mask)
+                            loss -= self.cfg.algorithm.entropy_bonus * entropy_loss
+                        metrics_data["actor/entropy_loss"] = entropy_loss.detach().item()
 
                     if self.enable_sft_co_train:
                         self._train_sft_epoch(metrics_data, loss)
@@ -1469,6 +1537,7 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
                 self.torch_platform.empty_cache()
 
                 grad_norm, lr_list = self.optimizer_step()
+
                 data = {
                     "actor/grad_norm": grad_norm,
                     "actor/lr": lr_list[0],

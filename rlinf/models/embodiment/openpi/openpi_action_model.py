@@ -66,6 +66,11 @@ class OpenPi0Config(Pi0Config):
     value_after_vlm: bool = False  # value after vlm, pi05 mode
     value_vlm_mode: str = "mean_token"  # last_token, mean_token, first_token
 
+    # ===== NFT (DiffusionNFT) parameters =====
+    use_nft: bool = False  # Enable NFT: ODE rollout + DiffusionNFT implicit velocity loss
+    nft_beta: float = 1.0  # β for implicit velocity construction
+    nft_max_drift: float = 0.5  # max L2 norm of (v_theta - v_old), trust region constraint
+
     # ===== DSRL-specific parameters =====
     use_dsrl: bool = False  # Enable DSRL algorithm
     dsrl_state_dim: int = 8  # Raw state dimension for DSRL encoders
@@ -309,6 +314,10 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
             return self.sft_forward(**kwargs)
         elif forward_type == ForwardType.DEFAULT:
             return self.default_forward(**kwargs)
+        elif forward_type == ForwardType.NFT:
+            return self.nft_forward(**kwargs)
+        elif forward_type == ForwardType.NFT_PRECOMPUTE:
+            return self.nft_precompute_ref(**kwargs)
         elif forward_type == ForwardType.SAC:
             return self.sac_forward(**kwargs)
         elif forward_type == ForwardType.SAC_Q:
@@ -322,6 +331,137 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         observation = data["observation"]
         actions = data["actions"]
         return super().forward(observation, actions)
+
+    def _predict_velocity(self, observation, actions, noise, time):
+        """
+        Same as PI0Pytorch.forward(), but returns (v_theta, v_target) instead of mse_loss.
+        Keep in sync with PI0Pytorch.forward() when upstream changes.
+        """
+        images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=False)
+
+        time_expanded = time[:, None, None]
+        x_t = time_expanded * noise + (1 - time_expanded) * actions
+        u_t = noise - actions
+
+        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
+        prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
+        prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
+        prefix_att_2d_masks_4d = self._prepare_attention_masks_4d(prefix_att_2d_masks)
+        self.paligemma_with_expert.paligemma.language_model.config._attn_implementation = "eager"  # noqa: SLF001
+
+        # Reuse the same prefix-cache path as PPO/GRPO to avoid the heavier
+        # full prefix+suffix training forward used above.
+        _, past_key_values = self.paligemma_with_expert.forward(
+            attention_mask=prefix_att_2d_masks_4d,
+            position_ids=prefix_position_ids,
+            past_key_values=None,
+            inputs_embeds=[prefix_embs, None],
+            use_cache=True,
+        )
+
+        suffix_out = self.get_suffix_out(
+            state,
+            prefix_pad_masks,
+            past_key_values,
+            x_t,
+            time,
+        )
+
+        v_t = self.action_out_proj(suffix_out)
+
+        return v_t, u_t
+
+    def _build_model_observation(
+        self,
+        forward_inputs: dict[str, torch.Tensor],
+    ) -> _model.Observation:
+        """Transform rollout inputs and move tensors onto the model device."""
+        processed_obs = self.input_transform(forward_inputs, transpose=False)
+        processed_obs = self.precision_processor(processed_obs)
+        return _model.Observation.from_dict(processed_obs)
+
+    def nft_precompute_ref(
+        self,
+        forward_inputs: dict[str, torch.Tensor],
+        **kwargs,
+    ) -> dict[str, torch.Tensor]:
+        """
+        Precompute v_old for NFT training.
+        Called before any gradient update, so model weights == rollout weights.
+        """
+        if self.is_gradient_checkpointing_enabled():
+            self.gradient_checkpointing_disable()
+        observation = self._build_model_observation(forward_inputs)
+        actions = forward_inputs["nft_actions"]
+        noise = self.sample_noise(actions.shape, actions.device)
+        time = self.sample_time(actions.shape[0], actions.device)
+
+        v_old, _ = self._predict_velocity(observation, actions, noise, time)
+
+        return {
+            "nft_time": time.detach(),
+            "nft_noise": noise.detach(),
+            "nft_v_old": v_old.detach(),
+        }
+
+    def nft_forward(
+        self,
+        forward_inputs: dict[str, torch.Tensor],
+        **kwargs,
+    ) -> dict[str, Any]:
+        """
+        DiffusionNFT forward: compute v_theta with current weights,
+        use precomputed v_old from before training updates.
+        """
+        if self.is_gradient_checkpointing_enabled():
+            self.gradient_checkpointing_disable()
+        observation = self._build_model_observation(forward_inputs)
+        actions = forward_inputs["nft_actions"]
+        noise = forward_inputs["nft_noise"]
+        time = forward_inputs["nft_time"]
+        v_old_full = forward_inputs["nft_v_old"]
+
+        v_theta, _ = self._predict_velocity(observation, actions, noise, time)
+
+        # Truncate to action_chunk × action_env_dim
+        trunc = (slice(None), slice(None, self.config.action_chunk), slice(None, self.config.action_env_dim))
+        v_theta_t = v_theta[trunc]
+        v_old_t = v_old_full[trunc].detach()
+
+        # Delta-v clipping: trust region constraint on ||v_theta - v_old||
+        delta_v = v_theta_t - v_old_t
+        max_drift = self.config.nft_max_drift
+        delta_norm = delta_v.reshape(delta_v.shape[0], -1).norm(dim=1, keepdim=True).unsqueeze(-1) + 1e-8  # [B,1,1]
+        clip_coef = (max_drift / delta_norm).clamp(max=1.0)
+        delta_v_clipped = delta_v * clip_coef
+
+        # DiffusionNFT implicit velocity construction (using clipped delta)
+        beta = self.config.nft_beta
+        v_pos = v_old_t + beta * delta_v_clipped
+        v_neg = v_old_t - beta * delta_v_clipped
+
+        # x0 predictions (flow matching: x0 = xt - t * v)
+        time_bc = time[:, None, None]
+        x0 = actions[trunc]
+        x_t = time_bc * noise + (1 - time_bc) * actions
+        x0_pos = x_t[trunc] - time_bc * v_pos
+        x0_neg = x_t[trunc] - time_bc * v_neg
+        # pos_err and neg_err are the same on the first train step
+        pos_err = ((x0_pos - x0).pow(2)).mean(dim=[1, 2])  # [B]
+        neg_err = ((x0_neg - x0).pow(2)).mean(dim=[1, 2])  # [B]
+
+        with torch.no_grad():
+            delta_v_norm = delta_v.reshape(delta_v.shape[0], -1).norm(dim=1).mean()
+            v_old_norm = v_old_t.reshape(v_old_t.shape[0], -1).norm(dim=1).mean()
+            drift_clip_frac = (clip_coef < 1).float().mean()
+
+        return {
+            "pos_err": pos_err,
+            "neg_err": neg_err,
+            "delta_v_norm": delta_v_norm,
+            "v_old_norm": v_old_norm,
+            "drift_clip_frac": drift_clip_frac,
+        }
 
     def default_forward(
         self,
@@ -429,6 +569,46 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
             processed_obs
         )  # obs precision processor
         observation = _model.Observation.from_dict(processed_obs)
+
+        if self.config.use_nft:
+            # Disable gradient checkpointing for NFT mode
+            if self.is_gradient_checkpointing_enabled():
+                self.gradient_checkpointing_disable()
+            # NFT mode: pure ODE sampling, only store obs + action
+            outputs = self.sample_actions(
+                observation, mode="eval", compute_values=False
+            )
+            # Raw actions in normalized space (before output_transform)
+            raw_actions = outputs["actions"]
+            # Environment actions (after output_transform)
+            actions = self.output_transform(
+                {"actions": raw_actions, "state": observation.state}
+            )["actions"]
+
+            bsize = actions.shape[0]
+            # Forward inputs: only obs + raw actions, no chains/denoise_inds needed
+            forward_inputs = {
+                "tokenized_prompt": processed_obs["tokenized_prompt"],
+                "tokenized_prompt_mask": processed_obs["tokenized_prompt_mask"],
+                "nft_actions": raw_actions.detach(),  # normalized-space actions for SFT loss
+            }
+            cloned_obs = copy_dict_tensor(
+                {k: v for k, v in to_process_obs.items() if k != "prompt"}
+            )
+            forward_inputs.update(cloned_obs)
+
+            # Placeholders with correct shape to keep pipeline compatible
+            # prev_logprobs: [B, action_chunk, action_env_dim] matching default forward output
+            prev_logprobs = torch.zeros(
+                bsize, self.config.action_chunk, self.config.action_env_dim,
+                device=actions.device,
+            )
+            result = {
+                "prev_logprobs": prev_logprobs,
+                "prev_values": torch.zeros(bsize, 1, device=actions.device),
+                "forward_inputs": forward_inputs,
+            }
+            return actions, result
 
         is_dsrl_active = self.config.use_dsrl
         if is_dsrl_active:

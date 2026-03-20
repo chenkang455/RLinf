@@ -17,6 +17,7 @@ outputs/*
 .venv
 .docs-venv
 uv.lock
-rlinf/envs/maniskill/assets
-PKG-INFO
-*.egg-info/
+rlinf/envs/maniskill/
+other_papers
+claude/
+.claude

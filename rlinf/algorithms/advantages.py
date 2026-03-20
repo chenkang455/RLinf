@@ -255,6 +255,34 @@ def compute_grpo_dynamic_advantages(
 
     return advantages, None
 
+@register_advantage("nft-binary")
+def compute_nft_binary_advantages(
+    rewards: torch.Tensor,
+    loss_mask: torch.Tensor,
+    group_size: int,
+    **kwargs,
+):
+    """
+    NFT binary advantage: success → r=1, failure → r=0.
+
+    No group-relative standardization. Each trajectory is independently
+    labeled as positive (reward > 0) or negative (reward <= 0).
+
+    Args:
+        rewards (torch.Tensor): Per-trajectory scores. Shape: [num_groups, group_size]
+        loss_mask (torch.Tensor): Loss mask. Shape: [n_steps, bsz]
+        group_size (int): Group size (typically 1 for binary NFT).
+
+    Returns:
+        torch.Tensor: r values ∈ {0, 1}
+    """
+    scores = rewards.view(-1)  # [bsz]
+    r = (scores > 0).float()  # 1.0 for success, 0.0 for failure
+
+    r = (torch.zeros_like(loss_mask) + r.view(1, -1)) * loss_mask
+
+    return r, None
+
 
 @register_advantage("reinpp")
 def compute_reinpp_advantages(

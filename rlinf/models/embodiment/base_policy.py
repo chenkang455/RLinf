@@ -19,6 +19,8 @@ from enum import Enum
 class ForwardType(Enum):
     DEFAULT = "default"
     SFT = "sft"
+    NFT = "nft"
+    NFT_PRECOMPUTE = "nft_precompute"
     SAC = "sac"
     SAC_Q = "sac_q"
     CROSSQ = "crossq"
@@ -47,6 +49,9 @@ class BasePolicy(ABC):
             return self.default_forward(**kwargs)
         else:
             raise NotImplementedError
+
+    def nft_forward(self, **kwargs):
+        raise NotImplementedError
 
     def sac_forward(self, **kwargs):
         raise NotImplementedError

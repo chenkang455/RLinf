@@ -30,6 +30,10 @@ openpi:
   noise_method: "flow_sde"
   add_value_head: ${actor.model.add_value_head}
   detach_critic_input: False
+  # NFT (DiffusionNFT) mode (disabled by default)
+  use_nft: False
+  nft_beta: 1.0  # β for implicit velocity construction
+  nft_max_drift: 0.5  # max L2 norm of (v_theta - v_old), trust region
   # DSRL specific configurations (disabled by default)
   use_dsrl: False
   dsrl_state_dim: 8

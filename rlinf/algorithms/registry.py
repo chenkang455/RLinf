@@ -82,6 +82,12 @@ def policy_loss(**kwargs) -> tuple[torch.Tensor, dict]:
     loss_fn = get_policy_loss(loss_type)
 
     task_type = kwargs["task_type"]
+    if loss_type == "nft":
+        # DiffusionNFT loss uses pos_err/neg_err + advantages (r∈[0,1]), no logprob preprocessing
+        loss, metrics_data = loss_fn(**kwargs)
+        metrics_data = postprocess_loss_metric(metrics_data)
+        return loss, metrics_data
+
     if task_type == "embodied":
         kwargs = preprocess_loss_inputs(**kwargs)
 

@@ -431,6 +431,45 @@ def compute_ppo_actor_critic_loss(**kwargs) -> tuple[torch.Tensor, dict]:
     return loss, metrics_data
 
 
+@register_policy_loss("nft")
+def compute_nft_loss(
+    pos_err: torch.Tensor,
+    neg_err: torch.Tensor,
+    advantages: torch.Tensor,
+    loss_mask: Optional[torch.Tensor] = None,
+    **kwargs,
+) -> tuple[torch.Tensor, dict]:
+    """
+    DiffusionNFT loss: L = r * pos_err + (1-r) * neg_err
+
+    Args:
+        pos_err: Per-sample ||x0_pos - x0||². Shape: [bsz]
+        neg_err: Per-sample ||x0_neg - x0||². Shape: [bsz]
+        advantages: Optimality probability r ∈ [0, 1]. Shape: [bsz]
+        loss_mask: Optional mask for valid entries. Shape: [bsz]
+    """
+    r = advantages
+
+    loss_per_sample = r * pos_err + (1 - r) * neg_err
+
+    if loss_mask is not None:
+        loss_mask_count = loss_mask.count_nonzero() or 1
+        nft_loss = (loss_per_sample * loss_mask).sum() / loss_mask_count
+    else:
+        nft_loss = loss_per_sample.mean()
+
+    metrics_data = {
+        "actor/policy_loss": nft_loss.detach(),
+        "actor/nft_loss": nft_loss.detach(),
+        "actor/nft_pos_err": pos_err.mean().detach(),
+        "actor/nft_neg_err": neg_err.mean().detach(),
+        "actor/nft_delta_v_norm": kwargs.get("delta_v_norm", torch.tensor(0.0)).detach(),
+        "actor/nft_v_old_norm": kwargs.get("v_old_norm", torch.tensor(0.0)).detach(),
+        "actor/nft_drift_clip_frac": kwargs.get("drift_clip_frac", torch.tensor(0.0)).detach(),
+    }
+    return nft_loss, metrics_data
+
+
 @register_policy_loss("actor")
 def compute_grpo_actor_loss_fn(**kwargs) -> tuple[torch.Tensor, dict]:
     """
