@@ -34,6 +34,42 @@ from rlinf.workers.actor.fsdp_actor_worker import (
 class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
     """Embodied FSDP policy worker for NFT with off-policy support."""
 
+    def init_worker(self) -> None:
+        """Initialize actor and lagged rollout policy state."""
+        super().init_worker()
+        self.ref_state_dict = self.get_model_state_dict(
+            cpu_offload=True, full_state_dict=True
+        )
+
+    def get_rollout_state_dict(self) -> dict:
+        """Get the lagged rollout policy state dict."""
+        return self.ref_state_dict
+
+    def _update_ref_state_dict(self) -> None:
+        """Update lagged rollout policy with NFT tau."""
+        tau = float(self.cfg.algorithm.get("nft_tau", 1.0))
+        student_state_dict = self.get_model_state_dict(
+            cpu_offload=True, full_state_dict=True
+        )
+
+        if tau >= 1.0 or not hasattr(self, "ref_state_dict"):
+            self.ref_state_dict = student_state_dict
+            return
+
+        for key, target_tensor in self.ref_state_dict.items():
+            source_tensor = student_state_dict[key]
+            if (
+                torch.is_tensor(target_tensor)
+                and torch.is_tensor(source_tensor)
+                and target_tensor.is_floating_point()
+                and source_tensor.is_floating_point()
+            ):
+                target_tensor.lerp_(source_tensor.to(target_tensor.dtype), tau)
+            elif torch.is_tensor(target_tensor) and torch.is_tensor(source_tensor):
+                target_tensor.copy_(source_tensor)
+            else:
+                self.ref_state_dict[key] = source_tensor
+
     @Worker.timer("run_training")
     def run_training(self) -> None:
         """Run NFT training with off-policy decay support."""
@@ -131,6 +167,7 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
                 append_to_dict(metrics, data)
         # put LR scheduler step here
         self.lr_scheduler.step()
+        self._update_ref_state_dict()
         self.optimizer.zero_grad()
         clear_memory()
         mean_metric_dict = {key: np.mean(value) for key, value in metrics.items()}
@@ -179,6 +216,7 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
             adv_clip_max=self.cfg.algorithm.get("adv_clip_max", 1.0),
             dpo_beta=self.cfg.algorithm.get("dpo_beta", 1.0),
             max_drift=self.cfg.algorithm.get("max_drift", 0.5),
+            var_scale=self.cfg.algorithm.get("nft_var_scale", 1.0),
             loss_mask=batch["loss_mask"],
         )
         return loss, metrics_data
@@ -197,6 +235,7 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         adv_clip_max: float = 1.0,
         dpo_beta: float = 1.0,
         max_drift: float = 0.5,
+        var_scale: float = 1.0,
         loss_mask: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, dict]:
         """Compute DPO-style energy-based NFT loss."""
@@ -236,7 +275,10 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         # x-next prediction
         x_next_pos = _flow_mean(x_t, v_pos)
         x_next_neg = _flow_mean(x_t, v_neg)
-        var = std_t_det**2 + 1e-4
+        if noise_level == 0:
+            var = dt_bc**2 * var_scale # for numerical stability
+        else:
+            var = std_t_det**2 + 1e-4
         e_pos = ((x_next_pos - x_next) ** 2 / var).sum(dim=sum_dims)
         e_neg = ((x_next_neg - x_next) ** 2 / var).sum(dim=sum_dims)
         delta_e = e_pos - e_neg
