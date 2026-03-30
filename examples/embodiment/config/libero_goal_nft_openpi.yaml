@@ -55,6 +55,7 @@ algorithm:
   dpo_beta: 1.0         # DPO loss temperature
   max_drift: 0.5        # max velocity drift norm for clipping
   nft_var_scale: 1.0    # variance floor scale: var = std_t_det^2 + dt^2 * var_scale. For ODE (noise_level=0), controls energy sharpness
+  nft_tau: 1.0          # rollout lag policy EMA; 1.0 means on-policy
 
   # params required by rollout worker
   sampling_params:
@@ -100,7 +101,7 @@ rollout:
   pipeline_stage_num: 1
 
   model:
-    model_path: "/mnt/project_rlinf/chenkang/RLinf_codes/RLinf_new/logs/checkpoints/openpi0-libero-sft"
+    model_path: "/path/to/model/RLinf-Pi0-SFT-Spatial-Object-Goal"
     precision: ${actor.model.precision}
 
 actor:
@@ -113,7 +114,7 @@ actor:
 
   # Override the default values in model/pi0
   model:
-    model_path: "/mnt/project_rlinf/chenkang/RLinf_codes/RLinf_new/logs/checkpoints/openpi0-libero-sft"
+    model_path: "/path/to/model/RLinf-Pi0-SFT-Spatial-Object-Goal"
     num_action_chunks: 5 # interface for the env
     add_value_head: False
     openpi:
