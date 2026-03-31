@@ -54,7 +54,8 @@ algorithm:
   adv_clip_max: 1.0     # advantage clipping bound for DPO preference signal
   dpo_beta: 1.0         # DPO loss temperature
   max_drift: 0.5        # max velocity drift norm for clipping
-  nft_var_scale: 1.0    # variance floor scale: var = std_t_det^2 + dt^2 * var_scale. For ODE (noise_level=0), controls energy sharpness
+  nft_var_scale: 1.0    # ODE variance: var = dt^2 * var_scale (only used when noise_level=0; SDE uses std_t_det^2 + 1e-4)
+  nft_target_space: "xnext"  # xnext or x0
   nft_tau: 1.0          # rollout lag policy EMA; 1.0 means on-policy
 
   # params required by rollout worker

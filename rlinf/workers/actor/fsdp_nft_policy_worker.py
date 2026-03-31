@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import os
-from typing import Optional
 
 import numpy as np
 import torch
@@ -37,26 +36,35 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
     def init_worker(self) -> None:
         """Initialize actor and lagged rollout policy state."""
         super().init_worker()
-        self.ref_state_dict = self.get_model_state_dict(
-            cpu_offload=True, full_state_dict=True
-        )
+        self._init_rollout_model()
 
     def get_rollout_state_dict(self) -> dict:
         """Get the lagged rollout policy state dict."""
-        return self.ref_state_dict
+        return self.rollout_state_dict
 
-    def _update_ref_state_dict(self) -> None:
+    def _init_rollout_model(self) -> None:
+        """Initialize lagged rollout policy state and model."""
+        self.rollout_state_dict = self.get_model_state_dict(
+            cpu_offload=True, full_state_dict=True
+        )
+        self.rollout_model = self.model_provider_func()
+        self.rollout_model.load_state_dict(self.rollout_state_dict, strict=False)
+        self.rollout_model.eval()
+        self.rollout_model.requires_grad_(False)
+
+    def _update_rollout_state_dict(self) -> None:
         """Update lagged rollout policy with NFT tau."""
         tau = float(self.cfg.algorithm.get("nft_tau", 1.0))
         student_state_dict = self.get_model_state_dict(
             cpu_offload=True, full_state_dict=True
         )
 
-        if tau >= 1.0 or not hasattr(self, "ref_state_dict"):
-            self.ref_state_dict = student_state_dict
+        if tau >= 1.0 or not hasattr(self, "rollout_state_dict"):
+            self.rollout_state_dict = student_state_dict
+            self.rollout_model.load_state_dict(self.rollout_state_dict, strict=False)
             return
 
-        for key, target_tensor in self.ref_state_dict.items():
+        for key, target_tensor in self.rollout_state_dict.items():
             source_tensor = student_state_dict[key]
             if (
                 torch.is_tensor(target_tensor)
@@ -68,7 +76,88 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
             elif torch.is_tensor(target_tensor) and torch.is_tensor(source_tensor):
                 target_tensor.copy_(source_tensor)
             else:
-                self.ref_state_dict[key] = source_tensor
+                self.rollout_state_dict[key] = source_tensor
+        self.rollout_model.load_state_dict(self.rollout_state_dict, strict=False)
+
+    def _precompute_nft_training_inputs(self) -> None:
+        """Prepare NFT training tensors before the update loop."""
+        forward_inputs = self.rollout_batch["forward_inputs"]
+        target_space = self.cfg.algorithm.get("nft_target_space", "xnext")
+
+        if target_space == "x0":
+            # x0 space: resample step indices and interpolate xcur from x0
+            num_steps = self.model.config.num_steps
+            x0 = forward_inputs["nft_x0"]
+            step_indices = torch.randint(
+                0, num_steps, (x0.shape[0],), device=x0.device
+            )
+            schedule = torch.linspace(
+                1, 0, num_steps + 1, device=x0.device, dtype=x0.dtype
+            )
+            t = schedule[step_indices.long()]
+            xcur = (1 - t[:, None, None]) * x0 + t[:, None, None] * torch.randn_like(x0)
+            forward_inputs["nft_xcur"] = xcur
+            forward_inputs["nft_step_index"] = step_indices
+            forward_inputs["nft_v"] = self._recompute_v_old(forward_inputs, xcur, t)
+        elif target_space == "xnext":
+            # xnext space: nft_xcur, nft_step_index, nft_v all come from rollout directly
+            pass
+        else:
+            raise ValueError(f"Unsupported nft_target_space: {target_space}")
+
+    def _recompute_v_old(
+        self,
+        forward_inputs: dict,
+        xcur: torch.Tensor,
+        t: torch.Tensor,
+    ) -> torch.Tensor:
+        """Recompute old velocity with the lagged rollout model."""
+        chunk_size = self.cfg.actor.micro_batch_size
+        v_old_chunks = []
+
+        training_was_on_device = not self.is_weight_offloaded
+        if training_was_on_device:
+            self.offload_param_and_grad()
+            clear_memory()
+        self.rollout_model.to(self.device)
+
+        with torch.no_grad():
+            for start in range(0, xcur.shape[0], chunk_size):
+                end = min(start + chunk_size, xcur.shape[0])
+                forward_inputs_slice = put_tensor_device(
+                    self._slice_forward_inputs(forward_inputs, start, end),
+                    self.device,
+                )
+                rollout_output = self.rollout_model(
+                    forward_type=ForwardType.NFT,
+                    forward_inputs=forward_inputs_slice,
+                    nft_inputs={
+                        "x_t": xcur[start:end].to(device=self.device),
+                        "timesteps": t[start:end].to(device=self.device),
+                    },
+                    compute_values=False,
+                )
+                v_old_chunks.append(rollout_output["v_theta"].detach().cpu())
+
+        self.rollout_model.to("cpu")
+        if training_was_on_device:
+            self.load_param_and_grad(self.device)
+
+        return torch.cat(v_old_chunks, dim=0).to(xcur.device)
+
+    def _slice_forward_inputs(
+        self, forward_inputs: dict, start: int, end: int
+    ) -> dict:
+        """Slice nested forward inputs along the batch dimension."""
+        ret = {}
+        for key, value in forward_inputs.items():
+            if isinstance(value, torch.Tensor):
+                ret[key] = value[start:end]
+            elif isinstance(value, dict):
+                ret[key] = self._slice_forward_inputs(value, start, end)
+            else:
+                ret[key] = value
+        return ret
 
     @Worker.timer("run_training")
     def run_training(self) -> None:
@@ -91,6 +180,7 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
             self.rollout_batch = process_nested_dict_for_train(
                 self.rollout_batch, shuffle_id
             )
+            self._precompute_nft_training_inputs()
 
         assert (
             self.cfg.actor.global_batch_size
@@ -143,7 +233,7 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
                         is_last_micro_batch=(idx + 1) == self.gradient_accumulation,
                     )
 
-                    loss, metrics_data = self._nft_forward_and_loss(batch)
+                    loss, metrics_data = self.nft_forward_and_loss(batch)
 
                     if self.enable_sft_co_train:
                         self._train_sft_epoch(metrics_data, loss)
@@ -167,23 +257,23 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
                 append_to_dict(metrics, data)
         # put LR scheduler step here
         self.lr_scheduler.step()
-        self._update_ref_state_dict()
+        self._update_rollout_state_dict()
         self.optimizer.zero_grad()
         clear_memory()
         mean_metric_dict = {key: np.mean(value) for key, value in metrics.items()}
         mean_metric_dict = all_reduce_dict(
             mean_metric_dict, op=torch.distributed.ReduceOp.AVG
         )
-
         return mean_metric_dict
 
-    def _nft_forward_and_loss(self, batch):
+    def nft_forward_and_loss(self, batch):
         """NFT-specific forward and loss computation."""
         # data input
         forward_inputs = batch["forward_inputs"]
-        x_t_input = forward_inputs["nft_x"]
+        target_space = self.cfg.algorithm.get("nft_target_space", "xnext")
+        x_t_input = forward_inputs["nft_xcur"]
         step_indices = forward_inputs["nft_step_index"]
-        num_steps = self.cfg.actor.model.openpi.get("num_steps", 10)
+        num_steps = self.model.config.num_steps
         schedule = torch.linspace(
             1,
             0,
@@ -197,99 +287,60 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
             output_dict = self.model(
                 forward_type=ForwardType.NFT,
                 forward_inputs=forward_inputs,
-                nft_explicit_inputs={"x_t": x_t_input, "timesteps": t},
+                nft_inputs={"x_t": x_t_input, "timesteps": t},
                 compute_values=False,
             )
-        # compute loss
-        chunk = output_dict["v_theta"].shape[1]
-        action_env_dim = self.cfg.actor.model.openpi.get("action_env_dim", 7)
-        loss, metrics_data = self._compute_embodied_nft_loss(
-            v_theta=output_dict["v_theta"][:, :chunk, :action_env_dim],
-            v_old=forward_inputs["nft_v"][:, :chunk, :action_env_dim],
-            x_t=forward_inputs["nft_x"][:, :chunk, :action_env_dim],
-            x_next=forward_inputs["nft_xnext"][:, :chunk, :action_env_dim],
-            schedule=schedule,
-            step_indices=step_indices,
-            noise_level=forward_inputs["nft_noise_level"],
-            advantages=batch["advantages"],
-            beta=self.cfg.algorithm.get("nft_beta", 1.0),
-            adv_clip_max=self.cfg.algorithm.get("adv_clip_max", 1.0),
-            dpo_beta=self.cfg.algorithm.get("dpo_beta", 1.0),
-            max_drift=self.cfg.algorithm.get("max_drift", 0.5),
-            var_scale=self.cfg.algorithm.get("nft_var_scale", 1.0),
-            loss_mask=batch["loss_mask"],
-        )
-        return loss, metrics_data
-
-    def _compute_embodied_nft_loss(
-        self,
-        v_theta: torch.Tensor,  # [batch_size, chunk_len, action_env_dim]
-        v_old: torch.Tensor,  # [batch_size, chunk_len, action_env_dim]
-        x_t: torch.Tensor,  # [batch_size, chunk_len, action_env_dim]
-        x_next: torch.Tensor,  # [batch_size, chunk_len, action_env_dim]
-        schedule: torch.Tensor,  # [num_steps+1]
-        step_indices: torch.Tensor,
-        noise_level: torch.Tensor | float,
-        advantages: torch.Tensor,
-        beta: float = 1.0,
-        adv_clip_max: float = 1.0,
-        dpo_beta: float = 1.0,
-        max_drift: float = 0.5,
-        var_scale: float = 1.0,
-        loss_mask: Optional[torch.Tensor] = None,
-    ) -> tuple[torch.Tensor, dict]:
-        """Compute DPO-style energy-based NFT loss."""
+        # compute v_theta and v_old
+        v_theta, v_old, x_t = self._slice_nft_tensors(output_dict, forward_inputs)
         # shape alignment
-        batch_size, chunk_len = x_t.shape[:2]
         sum_dims = tuple(range(2, x_t.ndim))
-        loss_mask = loss_mask.expand(batch_size, chunk_len)
-        advantages = advantages.expand(batch_size, chunk_len)
+        batch_size, chunk_len = x_t.shape[:2]
+        loss_mask = batch["loss_mask"].expand(batch_size, chunk_len)
+        advantages = batch["advantages"].expand(batch_size, chunk_len)
         # preference y ∈ [-1, 1]
+        adv_clip_max = float(self.cfg.algorithm.get("adv_clip_max", 1.0))
         y = (
             torch.clamp(advantages * 2.0 - 1.0, -adv_clip_max, adv_clip_max)
             / adv_clip_max
         )
         # clip delta v
-        v_old = v_old.detach()
         delta_v = v_theta - v_old
         delta_norm = delta_v.norm(dim=sum_dims, keepdim=True) + 1e-8
-        max_drift = float(max_drift)
+        max_drift = float(self.cfg.algorithm.get("max_drift", 0.5))
         clip_coef = (max_drift / delta_norm).clamp(max=1.0)
+        beta = float(self.cfg.algorithm.get("nft_beta", 1.0))
         delta_v_clipped = delta_v * clip_coef
         # pos and neg candidate velocities
         v_pos = v_old + beta * delta_v_clipped
         v_neg = v_old - beta * delta_v_clipped
         # schedule params
         t_bc, dt_bc, sigma_i, std_t_det = self._build_schedule_params(
-            schedule, step_indices, noise_level, x_t
+            schedule, step_indices, forward_inputs["nft_noise_level"], x_t
         )
-        # flow matching transition mean
-
-        def _flow_mean(x_cur: torch.Tensor, vel: torch.Tensor) -> torch.Tensor:
-            x0_pred = x_cur - vel * t_bc
-            x1_pred = x_cur + vel * (1 - t_bc)
-            w0 = 1.0 - (t_bc - dt_bc)
-            w1 = t_bc - dt_bc - sigma_i**2 * dt_bc / (2 * t_bc)
-            return x0_pred * w0 + x1_pred * w1
-
-        # x-next prediction
-        x_next_pos = _flow_mean(x_t, v_pos)
-        x_next_neg = _flow_mean(x_t, v_neg)
-        if noise_level == 0:
-            var = dt_bc**2 * var_scale # for numerical stability
+        # compute var: x0 space scales with t^2, xnext space scales with dt^2
+        var_scale = float(self.cfg.algorithm.get("nft_var_scale", 1.0))
+        if torch.all(forward_inputs["nft_noise_level"] == 0):
+            var = (t_bc**2 if target_space == "x0" else dt_bc**2) * var_scale
         else:
             var = std_t_det**2 + 1e-4
-        e_pos = ((x_next_pos - x_next) ** 2 / var).sum(dim=sum_dims)
-        e_neg = ((x_next_neg - x_next) ** 2 / var).sum(dim=sum_dims)
+        # predict target state
+        target, pred_pos = self._compute_nft_target_and_pred(
+            forward_inputs, target_space, x_t, v_pos, t_bc, dt_bc, sigma_i
+        )
+        _, pred_neg = self._compute_nft_target_and_pred(
+            forward_inputs, target_space, x_t, v_neg, t_bc, dt_bc, sigma_i
+        )
+        e_pos = ((pred_pos - target) ** 2 / var).sum(dim=sum_dims)
+        e_neg = ((pred_neg - target) ** 2 / var).sum(dim=sum_dims)
         delta_e = e_pos - e_neg
         # dpo loss
-
-        logit = (float(dpo_beta) / 2.0) * y * delta_e
-        nft_loss = masked_mean(F.softplus(logit), loss_mask)
+        dpo_beta = float(self.cfg.algorithm.get("dpo_beta", 1.0))
+        logit = (dpo_beta / 2.0) * y * delta_e
+        loss = masked_mean(F.softplus(logit), loss_mask)
         # metrics
         with torch.no_grad():
             metrics_data = {
-                "actor/nft_loss": nft_loss.item(),
+                "actor/nft_loss": loss.item(),
                 "actor/delta_v_norm": delta_v.norm(dim=sum_dims).mean().item(),
                 "actor/clip_frac": (clip_coef < 1).float().mean().item(),
                 "actor/E_pos_mean": e_pos.mean().item(),
@@ -298,7 +349,46 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
                 "actor/logit_mean": logit.mean().item(),
                 "actor/pref_acc": (logit < 0).float().mean().item(),
             }
-        return nft_loss, metrics_data
+        return loss, metrics_data
+
+    def _slice_nft_tensors(
+        self,
+        output_dict: dict,
+        forward_inputs: dict,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Slice NFT tensors used by NFT loss."""
+        chunk = output_dict["v_theta"].shape[1]
+        action_env_dim = self.model.config.action_env_dim
+        v_theta = output_dict["v_theta"][:, :chunk, :action_env_dim]
+        x_t = forward_inputs["nft_xcur"][:, :chunk, :action_env_dim]
+        v_old = forward_inputs["nft_v"][:, :chunk, :action_env_dim].detach()
+        return v_theta, v_old, x_t
+
+    def _compute_nft_target_and_pred(
+        self,
+        forward_inputs: dict,
+        target_space: str,
+        x_t: torch.Tensor,
+        vel: torch.Tensor,
+        t_bc: torch.Tensor,
+        dt_bc: torch.Tensor,
+        sigma_i: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Build target and predicted state for the given NFT target space."""
+        # TODO: move into the model file or utils file for better reuse
+        if target_space == "x0":
+            target = forward_inputs["nft_x0"][:, : x_t.shape[1], : x_t.shape[2]]
+            pred = x_t - vel * t_bc
+        elif target_space == "xnext":
+            target = forward_inputs["nft_xnext"][:, : x_t.shape[1], : x_t.shape[2]]
+            x0_pred = x_t - vel * t_bc
+            x1_pred = x_t + vel * (1 - t_bc)
+            w0 = 1.0 - (t_bc - dt_bc)
+            w1 = t_bc - dt_bc - sigma_i**2 * dt_bc / (2 * t_bc)
+            pred = x0_pred * w0 + x1_pred * w1
+        else:
+            raise ValueError(f"Unsupported nft_target_space: {target_space}")
+        return target, pred
 
     def _build_schedule_params(
         self,
@@ -311,12 +401,14 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
 
         Returns: (t_bc, dt_bc, sigma_i, std_t_det)
         """
+        # TODO: move into the model file or utils file for better reuse
+        # params
         ndim = x_t.ndim
+        idx = step_indices.long()
 
         def pad(x):
             return x.view(-1, *([1] * (ndim - 1)))
 
-        idx = step_indices.long()
         # timestep: t_cur and dt = t_cur - t_next
         t_bc = pad(schedule[idx])
         dt_bc = pad(schedule[idx] - schedule[idx + 1])
