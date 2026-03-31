@@ -114,8 +114,8 @@ Visualization and Results
 - **Training Metrics**:
 
   - ``train/actor/nft_loss``: NFT preference loss
-  - ``train/actor/E_preferred``: Energy of preferred (successful) trajectories
-  - ``train/actor/E_dispreferred``: Energy of dispreferred (failed) trajectories
+  - ``train/actor/E_pos_mean``: Energy of preferred (successful) trajectories
+  - ``train/actor/E_neg_mean``: Energy of dispreferred (failed) trajectories
   - ``train/actor/delta_v_norm``: Velocity drift norm (before clipping)
   - ``train/actor/grad_norm``: Gradient norm
 

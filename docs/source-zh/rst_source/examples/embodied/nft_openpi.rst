@@ -114,8 +114,8 @@ NFT 使用与 π₀ 相同的环境和模型依赖。请参阅 :doc:`pi0` 获取
 - **训练指标**:
 
   - ``train/actor/nft_loss``: NFT 偏好损失
-  - ``train/actor/E_preferred``: 偏好（成功）轨迹的能量
-  - ``train/actor/E_dispreferred``: 非偏好（失败）轨迹的能量
+  - ``train/actor/E_pos_mean``: 偏好（成功）轨迹的能量
+  - ``train/actor/E_neg_mean``: 非偏好（失败）轨迹的能量
   - ``train/actor/delta_v_norm``: 速度漂移范数（裁剪前）
   - ``train/actor/grad_norm``: 梯度范数
 
