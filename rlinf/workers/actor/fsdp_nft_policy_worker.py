@@ -297,12 +297,9 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         batch_size, chunk_len = x_t.shape[:2]
         loss_mask = batch["loss_mask"].expand(batch_size, chunk_len)
         advantages = batch["advantages"].expand(batch_size, chunk_len)
-        # preference y ∈ [-1, 1]
         adv_clip_max = float(self.cfg.algorithm.get("adv_clip_max", 1.0))
-        y = (
-            torch.clamp(advantages * 2.0 - 1.0, -adv_clip_max, adv_clip_max)
-            / adv_clip_max
-        )
+        advantages_clip = torch.clamp(advantages, -adv_clip_max, adv_clip_max)
+        r = torch.clamp((advantages_clip / adv_clip_max) / 2.0 + 0.5, 0.0, 1.0)
         # clip delta v
         delta_v = v_theta - v_old
         delta_norm = delta_v.norm(dim=sum_dims, keepdim=True) + 1e-8
@@ -317,12 +314,6 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         t_bc, dt_bc, sigma_i, std_t_det = self._build_schedule_params(
             schedule, step_indices, forward_inputs["nft_noise_level"], x_t
         )
-        # compute var: x0 space scales with t^2, xnext space scales with dt^2
-        var_scale = float(self.cfg.algorithm.get("nft_var_scale", 1.0))
-        if torch.all(forward_inputs["nft_noise_level"] == 0):
-            var = (t_bc**2 if target_space == "x0" else dt_bc**2) * var_scale
-        else:
-            var = std_t_det**2 + 1e-4
         # predict target state
         target, pred_pos = self._compute_nft_target_and_pred(
             forward_inputs, target_space, x_t, v_pos, t_bc, dt_bc, sigma_i
@@ -330,24 +321,38 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         _, pred_neg = self._compute_nft_target_and_pred(
             forward_inputs, target_space, x_t, v_neg, t_bc, dt_bc, sigma_i
         )
-        e_pos = ((pred_pos - target) ** 2 / var).sum(dim=sum_dims)
-        e_neg = ((pred_neg - target) ** 2 / var).sum(dim=sum_dims)
-        delta_e = e_pos - e_neg
-        # dpo loss
-        dpo_beta = float(self.cfg.algorithm.get("dpo_beta", 1.0))
-        logit = (dpo_beta / 2.0) * y * delta_e
-        loss = masked_mean(F.softplus(logit), loss_mask)
+        # compute energy with configurable weight normalization
+        weight_mode = self.cfg.algorithm.get("nft_weight_mode", "auto")
+        weight_args = (
+            weight_mode, target_space, t_bc, dt_bc, std_t_det,
+            forward_inputs["nft_noise_level"], target, sum_dims,
+        )
+        w_pos = self._compute_nft_weight(*weight_args, pred=pred_pos)
+        w_neg = self._compute_nft_weight(*weight_args, pred=pred_neg)
+        e_pos = ((pred_pos - target) ** 2 * w_pos).sum(dim=sum_dims)
+        e_neg = ((pred_neg - target) ** 2 * w_neg).sum(dim=sum_dims)
+        # loss computation
+        loss_form = self.cfg.algorithm.get("nft_loss_form", "dpo")
+        if loss_form == "dpo":
+            dpo_beta = float(self.cfg.algorithm.get("dpo_beta", 1.0))
+            y = r * 2.0 - 1.0
+            delta_e = e_pos - e_neg
+            logit = (dpo_beta / 2.0) * y * delta_e
+            loss = masked_mean(F.softplus(logit), loss_mask)
+        elif loss_form == "mse":
+            loss = masked_mean(r * e_pos + (1.0 - r) * e_neg, loss_mask)
+        else:
+            raise ValueError(f"Unsupported nft_loss_form: {loss_form}")
         # metrics
         with torch.no_grad():
             metrics_data = {
                 "actor/nft_loss": loss.item(),
                 "actor/delta_v_norm": delta_v.norm(dim=sum_dims).mean().item(),
                 "actor/clip_frac": (clip_coef < 1).float().mean().item(),
+                "actor/r_mean": r.mean().item(),
                 "actor/E_pos_mean": e_pos.mean().item(),
                 "actor/E_neg_mean": e_neg.mean().item(),
                 "actor/delta_E_mean": delta_e.mean().item(),
-                "actor/logit_mean": logit.mean().item(),
-                "actor/pref_acc": (logit < 0).float().mean().item(),
             }
         return loss, metrics_data
 
@@ -421,3 +426,54 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         # transition std
         std_t_det = (torch.sqrt(dt_bc.clamp_min(0)) * sigma_i).detach()
         return t_bc, dt_bc, sigma_i, std_t_det
+
+    def _compute_nft_weight(
+        self,
+        weight_mode: str,
+        target_space: str,
+        t_bc: torch.Tensor,
+        dt_bc: torch.Tensor,
+        std_t_det: torch.Tensor,
+        noise_level: torch.Tensor,
+        target: torch.Tensor,
+        sum_dims: tuple[int, ...],
+        *,
+        pred: torch.Tensor,
+    ) -> torch.Tensor | float:
+        """Compute per-element multiplicative weight for NFT energy.
+
+        Supported weight_mode values (set via ``nft_weight_mode`` in config):
+            "constant"  — fixed scalar ``nft_weight_scale`` (default 1.0).
+            "t"        — 1 / (t^2 or dt^2), scaled by ``nft_weight_scale``.
+            "sigma"    — 1 / (std_t_det^2 + eps).
+            "adaptive" — 1 / abs-error-mean (stop-grad), à la DiffusionNFT.
+            "auto"     — "adaptive" when noise_level==0 (ODE), otherwise "sigma" (SDE).
+        """
+        weight = float(self.cfg.algorithm.get("nft_weight_scale", 1.0))
+        if weight_mode == "auto":
+            if torch.all(noise_level == 0):
+                actual_mode = "adaptive"
+            else:
+                actual_mode = "sigma"
+            weight = self._compute_nft_weight(
+                actual_mode, target_space, t_bc, dt_bc, std_t_det,
+                noise_level, target, sum_dims, pred=pred,
+            )
+        elif weight_mode == "constant":
+            pass
+        elif weight_mode == "t":
+            weight *= t_bc**2
+        elif weight_mode == "sigma":
+            # loss in pi-step-nft paper
+            weight /= std_t_det**2 + 1e-4
+        elif weight_mode == "adaptive":
+            # loss in diffusion-nft paper
+            with torch.no_grad():
+                w = (
+                    torch.abs(pred.double() - target.double())
+                    .mean(dim=sum_dims, keepdim=True)
+                    .clamp(min=1e-4)
+                    .to(pred.dtype)
+                )
+            weight /= w
+        return weight
