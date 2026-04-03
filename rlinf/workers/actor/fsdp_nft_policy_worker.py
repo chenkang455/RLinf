@@ -302,7 +302,6 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         advantages = batch["advantages"].expand(batch_size, chunk_len)
         adv_clip_max = float(self.cfg.algorithm.get("adv_clip_max", 1.0))
         advantages_clip = torch.clamp(advantages, -adv_clip_max, adv_clip_max)
-        r = torch.clamp((advantages_clip / adv_clip_max) / 2.0 + 0.5, 0.0, 1.0)
         # clip delta v
         delta_v = v_theta - v_old
         delta_norm = delta_v.norm(dim=sum_dims, keepdim=True) + 1e-8
@@ -338,11 +337,13 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         loss_form = self.cfg.algorithm.get("nft_loss_form", "dpo")
         if loss_form == "dpo":
             dpo_beta = float(self.cfg.algorithm.get("dpo_beta", 1.0))
-            y = r * 2.0 - 1.0
+            y = torch.clamp(advantages * 2.0 - 1.0, -adv_clip_max, adv_clip_max)
+            y = y / adv_clip_max
             delta_e = e_pos - e_neg
             logit = (dpo_beta / 2.0) * y * delta_e
             loss = masked_mean(F.softplus(logit), loss_mask)
         elif loss_form == "mse":
+            r = torch.clamp((advantages_clip / adv_clip_max) / 2.0 + 0.5, 0.0, 1.0)
             loss = masked_mean(r * e_pos + (1.0 - r) * e_neg, loss_mask)
         else:
             raise ValueError(f"Unsupported nft_loss_form: {loss_form}")
@@ -352,7 +353,6 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
                 "actor/nft_loss": loss.item(),
                 "actor/delta_v_norm": delta_v.norm(dim=sum_dims).mean().item(),
                 "actor/clip_frac": (clip_coef < 1).float().mean().item(),
-                "actor/r_mean": r.mean().item(),
                 "actor/E_pos_mean": e_pos.mean().item(),
                 "actor/E_neg_mean": e_neg.mean().item(),
                 "actor/delta_E_mean": delta_e.mean().item(),
