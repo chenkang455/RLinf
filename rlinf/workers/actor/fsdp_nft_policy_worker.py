@@ -36,14 +36,11 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
     def init_worker(self) -> None:
         """Initialize actor and lagged rollout policy state."""
         super().init_worker()
-        self._init_rollout_model()
+        # self._init_rollout_model()
 
     def get_rollout_state_dict(self) -> dict:
         """Get the full EMA lagged state dict (trainable + frozen) for rollout workers."""
-        return {
-            k: v.to(self.device) if torch.is_tensor(v) else v
-            for k, v in self.rollout_model.state_dict().items()
-        }
+        return super().get_rollout_state_dict()
 
     def _init_rollout_model(self) -> None:
         """Initialize lagged rollout policy state and model."""
@@ -260,7 +257,7 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
                 append_to_dict(metrics, data)
         # put LR scheduler step here
         self.lr_scheduler.step()
-        self.soft_update_rollout_state_dict()
+        # self.soft_update_rollout_state_dict()
         self.optimizer.zero_grad()
         clear_memory()
         mean_metric_dict = {key: np.mean(value) for key, value in metrics.items()}
