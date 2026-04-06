@@ -165,12 +165,11 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
             )
         # compute loss
         chunk = output_dict["v_theta"].shape[1]
-        action_env_dim = self.cfg.actor.model.openpi.get("action_env_dim", 7)
         loss, metrics_data = self._compute_embodied_nft_loss(
-            v_theta=output_dict["v_theta"][:, :chunk, :action_env_dim],
-            v_old=forward_inputs["nft_v"][:, :chunk, :action_env_dim],
-            x_t=forward_inputs["nft_x"][:, :chunk, :action_env_dim],
-            x_next=forward_inputs["nft_xnext"][:, :chunk, :action_env_dim],
+            v_theta=output_dict["v_theta"][:, :chunk, :],
+            v_old=forward_inputs["nft_v"][:, :chunk, :],
+            x_t=forward_inputs["nft_x"][:, :chunk, :],
+            x_next=forward_inputs["nft_xnext"][:, :chunk, :],
             schedule=schedule,
             step_indices=step_indices,
             noise_level=forward_inputs["nft_noise_level"],
