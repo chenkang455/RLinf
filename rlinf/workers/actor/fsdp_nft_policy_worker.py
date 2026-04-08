@@ -34,50 +34,60 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
     """Embodied FSDP policy worker for NFT with off-policy support."""
 
     def init_worker(self) -> None:
-        """Initialize actor and lagged rollout policy state."""
+        """Initialize actor and rollout model state for off-policy support."""
         super().init_worker()
-        # self._init_rollout_model()
+        self.init_rollout_model()
+
+    def init_rollout_model(self) -> None:
+        """Initialize rollout model state for off-policy support."""
+        self.nft_tau = float(self.cfg.algorithm.get("nft_tau", 1.0))
+        if self.nft_tau < 1.0:
+            src = self.get_model_state_dict(cpu_offload=False, full_state_dict=True)
+            self.rollout_model_state_dict = {}
+            for key, value in src.items():
+                if torch.is_tensor(value) and value.is_floating_point():
+                    self.rollout_model_state_dict[key] = value.float().clone()
+                elif torch.is_tensor(value):
+                    self.rollout_model_state_dict[key] = value.clone()
+                else:
+                    self.rollout_model_state_dict[key] = value
 
     def get_rollout_state_dict(self) -> dict:
-        """Get the full EMA lagged state dict (trainable + frozen) for rollout workers."""
-        return super().get_rollout_state_dict()
+        """Return rollout model weights (lagged if tau<1, or training weights if tau=1)."""
+        model_dict = self.get_model_state_dict(cpu_offload=False, full_state_dict=True)
+        if self.nft_tau >= 1.0:
+            return model_dict
+        # merge rollout and training model state dicts
+        merged_state_dict = {}
+        for key, base_value in model_dict.items():
+            if key not in self.rollout_model_state_dict:
+                merged_state_dict[key] = base_value
+                continue
 
-    def _init_rollout_model(self) -> None:
-        """Initialize lagged rollout policy state and model."""
-        self.rollout_state_dict = self.get_model_state_dict(
-            cpu_offload=True, full_state_dict=True
-        )
-        self.rollout_model = self.model_provider_func()
-        self.rollout_model.load_state_dict(self.rollout_state_dict, strict=False)
-        self.rollout_model.eval()
-        self.rollout_model.requires_grad_(False)
-
-    def soft_update_rollout_state_dict(self) -> None:
-        """Update lagged rollout policy with NFT tau."""
-        tau = float(self.cfg.algorithm.get("nft_tau", 1.0))
-        student_state_dict = self.get_model_state_dict(
-            cpu_offload=True, full_state_dict=True
-        )
-
-        if tau >= 1.0 or not hasattr(self, "rollout_state_dict"):
-            self.rollout_state_dict = student_state_dict
-            self.rollout_model.load_state_dict(self.rollout_state_dict, strict=False)
-            return
-
-        for key, target_tensor in self.rollout_state_dict.items():
-            source_tensor = student_state_dict[key]
-            if (
-                torch.is_tensor(target_tensor)
-                and torch.is_tensor(source_tensor)
-                and target_tensor.is_floating_point()
-                and source_tensor.is_floating_point()
-            ):
-                target_tensor.lerp_(source_tensor.to(target_tensor.dtype), tau)
-            elif torch.is_tensor(target_tensor) and torch.is_tensor(source_tensor):
-                target_tensor.copy_(source_tensor)
+            rollout_value = self.rollout_model_state_dict[key]
+            if torch.is_tensor(rollout_value) and torch.is_tensor(base_value):
+                merged_state_dict[key] = rollout_value.to(
+                    device=base_value.device,
+                    dtype=base_value.dtype,
+                )
             else:
-                self.rollout_state_dict[key] = source_tensor
-        self.rollout_model.load_state_dict(self.rollout_state_dict, strict=False)
+                merged_state_dict[key] = rollout_value
+        return merged_state_dict
+
+    def soft_update_rollout_model(self) -> None:
+        """Soft update rollout model: state = (1-tau)*state + tau*current. No-op when tau=1."""
+        if self.nft_tau >= 1.0:
+            return
+        # soft update rollout model state dict
+        current = self.get_model_state_dict(cpu_offload=False, full_state_dict=True)
+        for key, rollout_tensor in self.rollout_model_state_dict.items():
+            src = current[key]
+            if torch.is_tensor(rollout_tensor) and rollout_tensor.is_floating_point():
+                rollout_tensor.lerp_(src.float(), self.nft_tau)
+            elif torch.is_tensor(rollout_tensor) and torch.is_tensor(src):
+                rollout_tensor.copy_(src)
+            else:
+                self.rollout_model_state_dict[key] = src
 
     def _precompute_nft_training_inputs(self) -> None:
         """Prepare NFT training tensors before the update loop."""
@@ -88,9 +98,7 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
             # x0 space: resample step indices and interpolate xcur from x0
             num_steps = self.model.config.num_steps
             x0 = forward_inputs["nft_x0"]
-            step_indices = torch.randint(
-                0, num_steps, (x0.shape[0],), device=x0.device
-            )
+            step_indices = torch.randint(0, num_steps, (x0.shape[0],), device=x0.device)
             schedule = torch.linspace(
                 1, 0, num_steps + 1, device=x0.device, dtype=x0.dtype
             )
@@ -111,43 +119,56 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         xcur: torch.Tensor,
         t: torch.Tensor,
     ) -> torch.Tensor:
-        """Recompute old velocity with the lagged rollout model."""
-        chunk_size = self.cfg.actor.micro_batch_size
-        v_old_chunks = []
+        """Recompute the old velocity with the rollout model."""
+        micro_bs = self.cfg.actor.micro_batch_size
+        v_old_buffer = []
+        training_was_on_device = False
+        cleanup_rollout_model = False
 
-        training_was_on_device = not self.is_weight_offloaded
-        if training_was_on_device:
-            self.offload_param_and_grad()
-            clear_memory()
-        self.rollout_model.to(self.device)
+        if self.nft_tau >= 1.0:
+            # On-policy: use training model directly
+            ref_model = self.model
+        else:
+            # Off-policy: build a temporary model with lagged rollout weights
+            training_was_on_device = not self.is_weight_offloaded
+            if training_was_on_device:
+                self.offload_param_and_grad()
+                clear_memory()
+
+            ref_model = self.model_provider_func()
+            ref_model.load_state_dict(self.get_rollout_state_dict(), strict=False)
+            ref_model.eval()
+            ref_model.requires_grad_(False)
+            ref_model.to(self.device)
+            cleanup_rollout_model = True
 
         with torch.no_grad():
-            for start in range(0, xcur.shape[0], chunk_size):
-                end = min(start + chunk_size, xcur.shape[0])
-                forward_inputs_slice = put_tensor_device(
+            for start in range(0, xcur.shape[0], micro_bs):
+                end = min(start + micro_bs, xcur.shape[0])
+                fi_slice = put_tensor_device(
                     self._slice_forward_inputs(forward_inputs, start, end),
                     self.device,
                 )
-                rollout_output = self.rollout_model(
+                out = ref_model(
                     forward_type=ForwardType.NFT,
-                    forward_inputs=forward_inputs_slice,
+                    forward_inputs=fi_slice,
                     nft_inputs={
                         "x_t": xcur[start:end].to(device=self.device),
                         "timesteps": t[start:end].to(device=self.device),
                     },
                     compute_values=False,
                 )
-                v_old_chunks.append(rollout_output["v_theta"].detach().cpu())
+                v_old_buffer.append(out["v_theta"].detach().cpu())
 
-        self.rollout_model.to("cpu")
-        if training_was_on_device:
-            self.load_param_and_grad(self.device)
+        if cleanup_rollout_model:
+            del ref_model
+            clear_memory()
+            if training_was_on_device:
+                self.load_param_and_grad(self.device)
 
-        return torch.cat(v_old_chunks, dim=0).to(xcur.device)
+        return torch.cat(v_old_buffer, dim=0).to(xcur.device)
 
-    def _slice_forward_inputs(
-        self, forward_inputs: dict, start: int, end: int
-    ) -> dict:
+    def _slice_forward_inputs(self, forward_inputs: dict, start: int, end: int) -> dict:
         """Slice nested forward inputs along the batch dimension."""
         ret = {}
         for key, value in forward_inputs.items():
@@ -257,7 +278,7 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
                 append_to_dict(metrics, data)
         # put LR scheduler step here
         self.lr_scheduler.step()
-        # self.soft_update_rollout_state_dict()
+        self.soft_update_rollout_model()
         self.optimizer.zero_grad()
         clear_memory()
         mean_metric_dict = {key: np.mean(value) for key, value in metrics.items()}
@@ -323,8 +344,12 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         # compute energy with configurable weight normalization
         weight_mode = self.cfg.algorithm.get("nft_weight_mode", "auto")
         weight_args = (
-            weight_mode, target_space, t_bc, dt_bc, std_t_det,
-            forward_inputs["nft_noise_level"], target, sum_dims,
+            weight_mode,
+            t_bc,
+            std_t_det,
+            forward_inputs["nft_noise_level"],
+            target,
+            sum_dims,
         )
         w_pos = self._compute_nft_weight(*weight_args, pred=pred_pos)
         w_neg = self._compute_nft_weight(*weight_args, pred=pred_neg)
@@ -363,10 +388,14 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Slice NFT tensors used by NFT loss."""
         chunk = output_dict["v_theta"].shape[1]
-        action_env_dim = self.model.config.action_env_dim
-        v_theta = output_dict["v_theta"][:, :chunk, :action_env_dim]
-        x_t = forward_inputs["nft_xcur"][:, :chunk, :action_env_dim]
-        v_old = forward_inputs["nft_v"][:, :chunk, :action_env_dim].detach()
+        # TODO: potential bug, need to check
+        # action_env_dim = self.model.config.action_env_dim
+        # v_theta = output_dict["v_theta"][:, :chunk, :action_env_dim]
+        # x_t = forward_inputs["nft_xcur"][:, :chunk, :action_env_dim]
+        # v_old = forward_inputs["nft_v"][:, :chunk, :action_env_dim].detach()
+        v_theta = output_dict["v_theta"][:, :chunk, :]
+        x_t = forward_inputs["nft_xcur"][:, :chunk, :]
+        v_old = forward_inputs["nft_v"][:, :chunk, :].detach()
         return v_theta, v_old, x_t
 
     def _compute_nft_target_and_pred(
@@ -430,9 +459,7 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
     def _compute_nft_weight(
         self,
         weight_mode: str,
-        target_space: str,
         t_bc: torch.Tensor,
-        dt_bc: torch.Tensor,
         std_t_det: torch.Tensor,
         noise_level: torch.Tensor,
         target: torch.Tensor,
@@ -449,17 +476,15 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
             "adaptive" — 1 / abs-error-mean (stop-grad), à la DiffusionNFT.
             "auto"     — "adaptive" when noise_level==0 (ODE), otherwise "sigma" (SDE).
         """
-        weight = float(self.cfg.algorithm.get("nft_weight_scale", 1.0))
+        # auto mode selection
         if weight_mode == "auto":
             if torch.all(noise_level == 0):
-                actual_mode = "adaptive"
+                weight_mode = "adaptive"
             else:
-                actual_mode = "sigma"
-            weight = self._compute_nft_weight(
-                actual_mode, target_space, t_bc, dt_bc, std_t_det,
-                noise_level, target, sum_dims, pred=pred,
-            )
-        elif weight_mode == "constant":
+                weight_mode = "sigma"
+        # weight computation
+        weight = float(self.cfg.algorithm.get("nft_weight_scale", 1.0))
+        if weight_mode == "constant":
             pass
         elif weight_mode == "t":
             weight *= t_bc**2
