@@ -76,6 +76,7 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
 
     def soft_update_rollout_model(self) -> None:
         """Soft update rollout model: state = (1-tau)*state + tau*current. No-op when tau=1."""
+        # TODO: potential bug on model state dict transfer, need to check
         if self.nft_tau >= 1.0:
             return
         # soft update rollout model state dict
@@ -357,11 +358,11 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         e_neg = ((pred_neg - target) ** 2 * w_neg).sum(dim=sum_dims)
         # loss computation
         loss_form = self.cfg.algorithm.get("nft_loss_form", "dpo")
+        delta_e = e_pos - e_neg
         if loss_form == "dpo":
             dpo_beta = float(self.cfg.algorithm.get("dpo_beta", 1.0))
             y = torch.clamp(advantages * 2.0 - 1.0, -adv_clip_max, adv_clip_max)
             y = y / adv_clip_max
-            delta_e = e_pos - e_neg
             logit = (dpo_beta / 2.0) * y * delta_e
             loss = masked_mean(F.softplus(logit), loss_mask)
         elif loss_form == "mse":
