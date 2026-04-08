@@ -45,6 +45,9 @@ def get_model(cfg: DictConfig, torch_dtype=None):
         config_dict = json.load(f)
 
     dreamzero_config = DreamZeroConfig(**config_dict)
+    dreamzero_config.action_head_cfg["_target_"] = (
+        "rlinf.models.embodiment.dreamzero.dreamzero_action_head.DreamZeroActionHead"
+    )
     # Disable defer_lora_injection for immediate loading
     if "config" in dreamzero_config.action_head_cfg and isinstance(
         dreamzero_config.action_head_cfg["config"], dict
