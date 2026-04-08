@@ -209,22 +209,31 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         """Prepare NFT training tensors before the update loop."""
         forward_inputs = self.rollout_batch["forward_inputs"]
         target_space = self.cfg.algorithm.get("nft_target_space", "xnext")
+        num_steps = self.model.config.num_steps
+        recompute_v = bool(self.cfg.algorithm.get("recompute_v", False))
 
         if target_space == "x0":
             # x0 space: resample step indices and interpolate xcur from x0
-            num_steps = self.model.config.num_steps
             x0 = forward_inputs["nft_x0"]
             step_indices = torch.randint(0, num_steps, (x0.shape[0],), device=x0.device)
             _, t = self._build_schedule_and_timesteps(step_indices, x0.device, x0.dtype)
             xcur = (1 - t[:, None, None]) * x0 + t[:, None, None] * torch.randn_like(x0)
             forward_inputs["nft_xcur"] = xcur
             forward_inputs["nft_step_index"] = step_indices
-            forward_inputs["nft_v"] = self._recompute_v_old(forward_inputs, xcur, t)
         elif target_space == "xnext":
-            # xnext space: nft_xcur, nft_step_index, nft_v all come from rollout directly
+            # xnext space: nft_xcur, nft_step_index come from rollout
             pass
         else:
             raise ValueError(f"Unsupported nft_target_space: {target_space}")
+
+        # recompute v_old: always for x0 space, opt-in for xnext space
+        if target_space == "x0" or recompute_v:
+            xcur = forward_inputs["nft_xcur"]
+            step_indices = forward_inputs["nft_step_index"]
+            _, t = self._build_schedule_and_timesteps(
+                step_indices, xcur.device, xcur.dtype
+            )
+            forward_inputs["nft_v"] = self._recompute_v_old(forward_inputs, xcur, t)
 
     def _recompute_v_old(
         self,
