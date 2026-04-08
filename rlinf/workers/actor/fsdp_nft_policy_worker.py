@@ -423,7 +423,7 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
             return masked_mean(F.softplus(logit), loss_mask)
         elif loss_form == "mse":
             advantages_clip = torch.clamp(advantages, -adv_clip_max, adv_clip_max)
-            r = torch.clamp((advantages_clip / adv_clip_max) / 2.0 + 0.5, 0.0, 1.0)
+            r = torch.clamp((advantages_clip / adv_clip_max), 0.0, 1.0)
             return masked_mean(r * e_pos + (1.0 - r) * e_neg, loss_mask)
         else:
             raise ValueError(f"Unsupported nft_loss_form: {loss_form}")
