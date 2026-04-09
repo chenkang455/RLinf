@@ -47,8 +47,8 @@ class DreamZeroActionHead(WANPolicyHead):
         # video input [B, C, T, H, W]
         videos = self._normalize_videos(data["images"])
         _, _, _, height, width = videos.shape
+        # `encode_image` expects frame-major layout `[B, T, C, H, W]`.
         image = videos[:, :, :1].transpose(1, 2)
-        # [B, C, T, H, W] -> [B, T, C, H, W]
         clip_feas, ys, image_latents = self.encode_image(image, self.num_frames, height, width)
         clip_feas = clip_feas.to(dtype=image_latents.dtype)
         ys = ys.to(dtype=image_latents.dtype)
@@ -84,6 +84,8 @@ class DreamZeroActionHead(WANPolicyHead):
         )
         return BatchFeature(
             data={
+                # Keep intermediate sampling tensors in `[B, T, C, H, W]` so
+                # scheduler samples and seq_len calculations both use frame-major layout.
                 "image_latents": image_latents.transpose(1, 2),
                 "noise_obs": noise_obs.transpose(1, 2),
                 "noise_action": noise_action,
@@ -124,6 +126,7 @@ class DreamZeroActionHead(WANPolicyHead):
         timestep = torch.zeros((noise_obs.shape[0], 1), device=noise_obs.device, dtype=torch.int64)
         seq_len = (noise_obs.shape[-2] // 2) * (noise_obs.shape[-1] // 2)
         self._run_diffusion_steps(
+            # DiT forward expects channel-major latent layout `[B, C, T, H, W]`.
             noisy_input=sampling_state["image_latents"].transpose(1, 2),
             timestep=timestep,
             action=None,
@@ -177,6 +180,7 @@ class DreamZeroActionHead(WANPolicyHead):
 
             if self.should_run_model(index, current_timestep, prev_predictions):
                 predictions = self._run_diffusion_steps(
+                    # Scheduler state is frame-major, so switch back before DiT.
                     noisy_input=noisy_input.transpose(1, 2),
                     timestep=timestep,
                     action=noisy_input_action,
@@ -201,6 +205,7 @@ class DreamZeroActionHead(WANPolicyHead):
                 _, flow_pred, flow_pred_cond_action = prev_predictions[-1]
 
             noisy_input = sample_scheduler.step(
+                # Scheduler updates samples in frame-major `[B, T, C, H, W]`.
                 model_output=flow_pred.transpose(1, 2),
                 timestep=video_timestep,
                 sample=noisy_input,
@@ -215,6 +220,7 @@ class DreamZeroActionHead(WANPolicyHead):
                 return_dict=False,
             )[0]
 
+        # Preserve the original DreamZero return layout for `video_pred`.
         return BatchFeature(data={"action_pred": noisy_input_action, "video_pred": noisy_input.transpose(1, 2)})
 
     def _normalize_videos(self, videos: torch.Tensor) -> torch.Tensor:
