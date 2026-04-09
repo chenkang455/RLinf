@@ -296,8 +296,20 @@ class DreamZeroPolicy(VLA, BasePolicy):
     def forward(self, forward_type=ForwardType.DEFAULT, **kwargs):
         if forward_type == ForwardType.DEFAULT:
             return self.default_forward(**kwargs)
+        elif forward_type == ForwardType.SFT:
+            return self.sft_forward(**kwargs)
         else:
             raise NotImplementedError
+
+    def sft_forward(self, data=None, **kwargs):
+        if data is None:
+            data = kwargs.get("data")
+        if data is None:
+            raise ValueError("sft_forward requires `data` from the SFT dataloader.")
+        outputs = super().forward(data=data)
+        if "loss" not in outputs:
+            raise ValueError("sft_forward requires `loss` from the SFT dataloader.")
+        return outputs
 
     def default_forward(
         self,

@@ -53,6 +53,15 @@ class FSDPVlaSftWorker(FSDPSftWorker):
             return build_lingbot_sft_dataloader(
                 self.cfg, self._world_size, self._rank, data_paths
             )
+        elif SupportedModel(self.cfg.actor.model.model_type) in [
+            SupportedModel.DREAMZERO
+        ]:
+            from rlinf.data.datasets.dreamzero import (
+                build_dreamzero_sft_dataloader,
+            )
+            return build_dreamzero_sft_dataloader(
+                self.cfg, self._world_size, self._rank, data_paths, eval_dataset
+            )
         else:
             raise KeyError(
                 f"not support such model type {self.cfg.actor.model.model_type} for SFT right now."
@@ -64,7 +73,8 @@ class FSDPVlaSftWorker(FSDPSftWorker):
 
     def get_train_model_output(self, batch: dict[str, Any]):
         if SupportedModel(self.cfg.actor.model.model_type) in [
-            SupportedModel.LINGBOTVLA
+            SupportedModel.LINGBOTVLA,
+            SupportedModel.DREAMZERO
         ]:
             batch_data = _pytree.tree_map(
                 lambda x: (

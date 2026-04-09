@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import json
+import torch
+import torch.nn as nn
 from pathlib import Path
 
 from groot.vla.data.schema import DatasetMetadata
@@ -26,6 +28,23 @@ from rlinf.models.embodiment.dreamzero.dreamzero_policy import (
     DreamZeroPolicy,
 )
 
+def _promote_scalar_params_to_1d(model):
+    """FSDP does not support 0-d parameters, so we promote scalar Parameters to shape=[1]."""
+    scalar_param_names = [name for name, p in model.named_parameters() if p.ndim == 0]
+    for full_name in scalar_param_names:
+        if "." in full_name:
+            module_name, param_name = full_name.rsplit(".", 1)
+            module = model.get_submodule(module_name)
+        else:
+            module = model
+            param_name = full_name
+
+        old_p = getattr(module, param_name)
+        new_p = nn.Parameter(
+            old_p.detach().reshape(1),
+            requires_grad=old_p.requires_grad,
+        )
+        setattr(module, param_name, new_p)
 
 def get_model(cfg: DictConfig, torch_dtype=None):
     """Load DreamZero policy from checkpoint."""
@@ -95,8 +114,10 @@ def get_model(cfg: DictConfig, torch_dtype=None):
     if any(".base_layer." in k for k in state_dict):
         state_dict = {k.replace(".base_layer.", "."): v for k, v in state_dict.items()}
     model.load_state_dict(state_dict, strict=False)
-    if hasattr(model, "post_initialize"):
-        model.post_initialize()
+
+    _promote_scalar_params_to_1d(model)
+    # if hasattr(model, "post_initialize"):
+    #     model.post_initialize()
 
     model = model.to(dtype=torch_dtype)
 
