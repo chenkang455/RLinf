@@ -313,7 +313,10 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
                 compute_values=False,
             )
         # post-process outputs
-        v_theta, v_old, x_t = self._slice_nft_tensors(output_dict, forward_inputs)
+        chunk = output_dict["v_theta"].shape[1]
+        v_theta = output_dict["v_theta"][:, :chunk, :]
+        x_t = forward_inputs["nft_xcur"][:, :chunk, :]
+        v_old = forward_inputs["nft_v"][:, :chunk, :].detach()
         sum_dims = tuple(range(2, x_t.ndim))
         batch_size, chunk_len = x_t.shape[:2]
         loss_mask = batch["loss_mask"].expand(batch_size, chunk_len)
@@ -327,11 +330,24 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         t_bc, dt_bc, sigma_i, std_t_det = self._build_schedule_params(
             schedule, step_indices, forward_inputs["nft_noise_level"], x_t
         )
-        # compute pos/neg energies
-        e_pos, e_neg = self._compute_nft_energy(
-            forward_inputs, target_space, x_t, v_pos, v_neg,
-            t_bc, dt_bc, sigma_i, std_t_det, sum_dims,
+        # compute target and predictions
+        target, pred_pos = self._compute_nft_target_and_pred(
+            forward_inputs, target_space, x_t, v_pos, t_bc, dt_bc, sigma_i
         )
+        _, pred_neg = self._compute_nft_target_and_pred(
+            forward_inputs, target_space, x_t, v_neg, t_bc, dt_bc, sigma_i
+        )
+        # compute weighted energies
+        noise_level = forward_inputs["nft_noise_level"]
+        weight_mode = self.cfg.algorithm.get("nft_weight_mode", "auto")
+        w_pos = self._compute_nft_weight(
+            weight_mode, t_bc, std_t_det, noise_level, target, sum_dims, pred=pred_pos
+        )
+        w_neg = self._compute_nft_weight(
+            weight_mode, t_bc, std_t_det, noise_level, target, sum_dims, pred=pred_neg
+        )
+        e_pos = ((pred_pos - target) ** 2 * w_pos).sum(dim=sum_dims)
+        e_neg = ((pred_neg - target) ** 2 * w_neg).sum(dim=sum_dims)
         # loss
         delta_e = e_pos - e_neg
         loss = self._compute_nft_loss(
@@ -368,41 +384,6 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         v_pos = v_old + beta * delta_v_clipped
         v_neg = v_old - beta * delta_v_clipped
         return delta_v, clip_coef, v_pos, v_neg
-
-    def _compute_nft_energy(
-        self,
-        forward_inputs: dict,
-        target_space: str,
-        x_t: torch.Tensor,
-        v_pos: torch.Tensor,
-        v_neg: torch.Tensor,
-        t_bc: torch.Tensor,
-        dt_bc: torch.Tensor,
-        sigma_i: torch.Tensor,
-        std_t_det: torch.Tensor,
-        sum_dims: tuple[int, ...],
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Compute pos energy and neg energy.
-
-        Returns: (e_pos, e_neg)
-        """
-        weight_mode = self.cfg.algorithm.get("nft_weight_mode", "auto")
-        noise_level = forward_inputs["nft_noise_level"]
-        # target is independent of vel, compute once
-        target, pred_pos = self._compute_nft_target_and_pred(
-            forward_inputs, target_space, x_t, v_pos, t_bc, dt_bc, sigma_i
-        )
-        _, pred_neg = self._compute_nft_target_and_pred(
-            forward_inputs, target_space, x_t, v_neg, t_bc, dt_bc, sigma_i
-        )
-
-        def _weighted_energy(pred: torch.Tensor) -> torch.Tensor:
-            w = self._compute_nft_weight(
-                weight_mode, t_bc, std_t_det, noise_level, target, sum_dims, pred=pred
-            )
-            return ((pred - target) ** 2 * w).sum(dim=sum_dims)
-
-        return _weighted_energy(pred_pos), _weighted_energy(pred_neg)
 
     def _compute_nft_loss(
         self,
@@ -551,23 +532,6 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
                 )
             weight /= w
         return weight
-
-    def _slice_nft_tensors(
-        self,
-        output_dict: dict,
-        forward_inputs: dict,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Slice NFT tensors used by NFT loss."""
-        chunk = output_dict["v_theta"].shape[1]
-        # TODO: potential bug, need to check
-        # action_env_dim = self.model.config.action_env_dim
-        # v_theta = output_dict["v_theta"][:, :chunk, :action_env_dim]
-        # x_t = forward_inputs["nft_xcur"][:, :chunk, :action_env_dim]
-        # v_old = forward_inputs["nft_v"][:, :chunk, :action_env_dim].detach()
-        v_theta = output_dict["v_theta"][:, :chunk, :]
-        x_t = forward_inputs["nft_xcur"][:, :chunk, :]
-        v_old = forward_inputs["nft_v"][:, :chunk, :].detach()
-        return v_theta, v_old, x_t
 
     def _slice_forward_inputs(self, forward_inputs: dict, start: int, end: int) -> dict:
         """Slice nested forward inputs along the batch dimension."""
