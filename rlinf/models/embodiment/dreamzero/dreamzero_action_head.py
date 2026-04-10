@@ -22,7 +22,6 @@ class DreamZeroActionHead(WANPolicyHead):
 
     def sample_action_video(self, backbone_output: BatchFeature, action_input: BatchFeature) -> BatchFeature:
         """Sample action video from DreamZero."""
-        del backbone_output
         self.set_frozen_modules_to_eval_mode()
         policy_inputs = self.prepare_policy_inputs(data=action_input)
         sampling_state = self.prepare_noise_action_video(policy_inputs)
@@ -52,6 +51,7 @@ class DreamZeroActionHead(WANPolicyHead):
         clip_feas, ys, image_latents = self.encode_image(image, self.num_frames, height, width)
         clip_feas = clip_feas.to(dtype=image_latents.dtype)
         ys = ys.to(dtype=image_latents.dtype)
+        self.current_start_frame = 0
         return BatchFeature(
             data={
                 "videos": videos,
@@ -141,6 +141,7 @@ class DreamZeroActionHead(WANPolicyHead):
             crossattn_caches=crossattn_caches,
             kv_cache_metadata={"start_frame": 0, "update_kv_cache": True},
         )
+        self.current_start_frame += 1
 
     def denoise_action_video(
         self,
@@ -179,6 +180,14 @@ class DreamZeroActionHead(WANPolicyHead):
             timestep_action = torch.ones((batch_size, self.action_horizon), device=device, dtype=torch.int64) * action_timestep
 
             if self.should_run_model(index, current_timestep, prev_predictions):
+                if self.current_start_frame + self.num_frame_per_block <= policy_inputs["ys"].shape[2]:
+                    start_frame = self.current_start_frame
+                    end_frame = self.current_start_frame + self.num_frame_per_block
+                else:
+                    frame_len = policy_inputs["ys"].shape[2]
+                    start_frame = frame_len - self.num_frame_per_block
+                    end_frame = frame_len
+                y = policy_inputs["ys"][:, :, start_frame : end_frame]
                 predictions = self._run_diffusion_steps(
                     # Scheduler state is frame-major, so switch back before DiT.
                     noisy_input=noisy_input.transpose(1, 2),
@@ -189,11 +198,14 @@ class DreamZeroActionHead(WANPolicyHead):
                     embodiment_id=policy_inputs["embodiment_id"],
                     context=policy_inputs["prompt_embs"],
                     seq_len=seq_len,
-                    y=policy_inputs["ys"][:, :, : self.num_frame_per_block],
+                    y=y,
                     clip_feature=policy_inputs["clip_feas"],
                     kv_caches=kv_caches,
                     crossattn_caches=crossattn_caches,
-                    kv_cache_metadata={"start_frame": 0, "update_kv_cache": False},
+                    kv_cache_metadata={
+                        "start_frame": self.current_start_frame,
+                        "update_kv_cache": False,
+                    },
                 )
                 flow_pred_cond, flow_pred_cond_action = predictions[0]
                 flow_pred_uncond, _ = predictions[1]
@@ -220,17 +232,20 @@ class DreamZeroActionHead(WANPolicyHead):
                 return_dict=False,
             )[0]
 
-        # Preserve the original DreamZero return layout for `video_pred`.
-        return BatchFeature(data={"action_pred": noisy_input_action, "video_pred": noisy_input.transpose(1, 2)})
+        # output
+        output = torch.cat([sampling_state["image_latents"], noisy_input], dim=1)
+        return BatchFeature(data={"action_pred": noisy_input_action, "video_pred": output.transpose(1, 2)})
 
     def _normalize_videos(self, videos: torch.Tensor) -> torch.Tensor:
         """Convert input videos to `[B, C, T, H, W]` in `[-1, 1]`."""
         videos = rearrange(videos, "b t h w c -> b c t h w")
         if videos.dtype == torch.uint8:
             videos = videos.float().div(255.0)
+            videos = videos.to(dtype=self.dtype)
             bsz, channels, num_frames, height, width = videos.shape
             videos = videos.permute(0, 2, 1, 3, 4).reshape(bsz * num_frames, channels, height, width)
             videos = self.normalize_video(videos)
             videos = videos.reshape(bsz, num_frames, channels, height, width).permute(0, 2, 1, 3, 4)
             assert videos.min() >= -1.0 and videos.max() <= 1.0, "videos must be in [-1,1] range"
+            videos = videos.to(dtype=self.dtype)
         return videos.to(dtype=torch.bfloat16)
