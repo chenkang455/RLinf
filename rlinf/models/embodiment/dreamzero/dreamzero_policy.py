@@ -73,6 +73,13 @@ class DreamZeroConfig(VLAConfig):
 class DreamZeroPolicy(VLA, BasePolicy):
     """Lightweight DreamZero action model: IdentityBackbone + WANPolicyHead."""
 
+
+    _no_split_modules = [
+        #"WanTextEncoder",
+        #"WanImageEncoder",
+        #"WanVideoVAE",
+        "CausalWanAttentionBlock",
+    ]
     def __init__(
         self,
         config: DreamZeroConfig,
@@ -302,11 +309,12 @@ class DreamZeroPolicy(VLA, BasePolicy):
             raise NotImplementedError
 
     def sft_forward(self, data=None, **kwargs):
+        inputs = data
         if data is None:
             data = kwargs.get("data")
         if data is None:
             raise ValueError("sft_forward requires `data` from the SFT dataloader.")
-        outputs = super().forward(data=data)
+        outputs = super().forward(inputs)
         if "loss" not in outputs:
             raise ValueError("sft_forward requires `loss` from the SFT dataloader.")
         return outputs
