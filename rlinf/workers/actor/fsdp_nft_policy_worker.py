@@ -518,11 +518,13 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
             pass
         elif weight_mode == "t":
             weight *= t_bc**2
+        elif weight_mode == "1-t":
+            weight *= (1 - t_bc)**2
         elif weight_mode == "sigma":
             # loss in pi-step-nft paper
             weight /= std_t_det**2 + 1e-4
         elif weight_mode == "adaptive":
-            # loss in diffusion-nft paper
+            # loss in diffusion-nft paper # todo: bug here, need to check
             with torch.no_grad():
                 w = (
                     torch.abs(pred.double() - target.double())
