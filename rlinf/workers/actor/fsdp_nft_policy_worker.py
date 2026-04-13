@@ -209,25 +209,22 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         """Prepare NFT training tensors before the update loop."""
         forward_inputs = self.rollout_batch["forward_inputs"]
         target_space = self.cfg.algorithm.get("nft_target_space", "xnext")
+        xcur_source = self.cfg.algorithm.get("nft_xcur_source", "rollout")
         num_steps = self.model.config.num_steps
         recompute_v = bool(self.cfg.algorithm.get("recompute_v", False))
 
-        if target_space == "x0":
-            # x0 space: resample step indices and interpolate xcur from x0
+        if xcur_source == "resample":
+            # Resample step indices and interpolate xcur from x0
             x0 = forward_inputs["nft_x0"]
             step_indices = torch.randint(0, num_steps, (x0.shape[0],), device=x0.device)
             _, t = self._build_schedule_and_timesteps(step_indices, x0.device, x0.dtype)
             xcur = (1 - t[:, None, None]) * x0 + t[:, None, None] * torch.randn_like(x0)
             forward_inputs["nft_xcur"] = xcur
             forward_inputs["nft_step_index"] = step_indices
-        elif target_space == "xnext":
-            # xnext space: nft_xcur, nft_step_index come from rollout
-            pass
-        else:
-            raise ValueError(f"Unsupported nft_target_space: {target_space}")
+            recompute_v = True  # must recompute v_old for resampled xcur
 
-        # recompute v_old: always for x0 space, opt-in for xnext space
-        if target_space == "x0" or recompute_v:
+        if recompute_v:
+            # recompute v_old: always for resample, opt-in for rollout
             xcur = forward_inputs["nft_xcur"]
             step_indices = forward_inputs["nft_step_index"]
             _, t = self._build_schedule_and_timesteps(
@@ -472,13 +469,13 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Build target and predicted state for the given NFT target space."""
         # TODO: move into the model file or utils file for better reuse
+        x0_pred = x_t - vel * t_bc
+        x1_pred = x_t + vel * (1 - t_bc)
         if target_space == "x0":
             target = forward_inputs["nft_x0"][:, : x_t.shape[1], : x_t.shape[2]]
-            pred = x_t - vel * t_bc
+            pred = x0_pred - (sigma_i**2 / 2) * x1_pred
         elif target_space == "xnext":
             target = forward_inputs["nft_xnext"][:, : x_t.shape[1], : x_t.shape[2]]
-            x0_pred = x_t - vel * t_bc
-            x1_pred = x_t + vel * (1 - t_bc)
             w0 = 1.0 - (t_bc - dt_bc)
             w1 = t_bc - dt_bc - sigma_i**2 * dt_bc / (2 * t_bc)
             pred = x0_pred * w0 + x1_pred * w1
