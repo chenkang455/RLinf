@@ -75,10 +75,10 @@ class DreamZeroPolicy(VLA, BasePolicy):
 
 
     _no_split_modules = [
-        #"WanTextEncoder",
-        #"WanImageEncoder",
-        #"WanVideoVAE",
-        "CausalWanAttentionBlock",
+        "T5SelfAttention", # text encoder
+        "AttentionBlock", # image encoder
+        #"ResidualBlock", # vae encoder
+        "CausalWanAttentionBlock", # action head
     ]
     def __init__(
         self,

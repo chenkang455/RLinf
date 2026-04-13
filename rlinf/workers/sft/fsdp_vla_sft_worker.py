@@ -86,6 +86,11 @@ class FSDPVlaSftWorker(FSDPSftWorker):
             )
             with self.amp_context:
                 losses_dict = self.model(forward_type=ForwardType.SFT, data=batch_data)
+            if losses_dict.get("dynamics_loss", None) is not None:
+                self._dreamzero_loss = {
+                    "dynamics_loss": losses_dict["dynamics_loss"],
+                    "action_loss": losses_dict["action_loss"],
+                }
             return losses_dict["loss"]
         observation, actions = batch
 
@@ -109,3 +114,13 @@ class FSDPVlaSftWorker(FSDPSftWorker):
 
         # train model return the loss
         return losses
+
+    def run_training(self):
+        train_metrics = super().run_training()
+        if self._dreamzero_loss is not None:
+            train_metrics.update({
+                "dynamics_loss": self._dreamzero_loss["dynamics_loss"],
+                "action_loss": self._dreamzero_loss["action_loss"],
+            })
+            self._dreamzero_loss = None
+        return train_metrics

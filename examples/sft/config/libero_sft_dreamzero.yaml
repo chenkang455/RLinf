@@ -22,11 +22,11 @@ runner:
     experiment_name: "libero_sft_dreamzero"
     logger_backends: ["tensorboard"]
 
-  max_epochs: 100
+  max_epochs: 2000
   max_steps: -1
   val_check_interval: -1
-  save_interval: 500
-  log_interval: 10
+  save_interval: 2000
+  log_interval: 100
 
 data:
   train_data_paths: "/mnt/project_rlinf_hs/yuanhuining/datasets/libero"
@@ -41,12 +41,12 @@ actor:
   global_batch_size: 16
   seed: 42
   dataloader_num_workers: 1
-  enable_offload: false
+  enable_offload: False
 
   model:
     model_type: "dreamzero"
     precision: bf16
-    model_path: "/mnt/project_rlinf/yuanhuining/repos/dreamzero/runs/train/2026-03-20T15-38-37Z/checkpoints/checkpoint-6000"
+    model_path: "/mnt/project_rlinf/liyanghao/data/models/DreamZero-DROID"
     tokenizer_path: "/mnt/project_rlinf/liyanghao/data/models/umt5-xxl"
     max_seq_len: 512
     dreamzero_action_horizon: 16
@@ -79,6 +79,9 @@ actor:
     sharding_strategy: "full_shard"
     use_orig_params: True
     gradient_checkpointing: True
+    #cpu_offload: True
+    limit_all_gathers: True
+    #offload_pin_memory: True
     grad_scaler:
       enabled: False
     mixed_precision:
