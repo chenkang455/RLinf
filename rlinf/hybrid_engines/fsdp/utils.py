@@ -309,10 +309,10 @@ def apply_fsdp2_to_model(
     if isinstance(fsdp_transformer_layer_cls_to_wrap, str):
         fsdp_transformer_layer_cls_to_wrap = [fsdp_transformer_layer_cls_to_wrap]
 
-    assert (
-        len(fsdp_transformer_layer_cls_to_wrap) > 0
-        and fsdp_transformer_layer_cls_to_wrap[0] is not None
-    )
+    #assert (
+    #    len(fsdp_transformer_layer_cls_to_wrap) > 0
+    #    and fsdp_transformer_layer_cls_to_wrap[0] is not None
+    #)
 
     modules_to_shard = []
 
