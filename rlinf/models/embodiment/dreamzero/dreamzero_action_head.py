@@ -16,6 +16,81 @@ class DreamZeroActionHead(WANPolicyHead):
 
     config_class = WANPolicyHeadConfig
 
+    def forward(self, backbone_output: BatchFeature, action_input: BatchFeature) -> BatchFeature:
+        """Run the local DreamZero training forward path."""
+        del backbone_output
+        self.set_frozen_modules_to_eval_mode()
+        policy_inputs = self.prepare_policy_inputs(data=action_input, mode="training")
+        training_targets = self.build_training_noise_targets(policy_inputs)
+        loss_dict = self.compute_training_losses(policy_inputs, training_targets)
+        return loss_dict
+
+    def compute_training_losses(
+        self,
+        policy_inputs: BatchFeature,
+        training_targets: BatchFeature,
+    ) -> BatchFeature:
+        """Run training forward and compute DreamZero losses."""
+        with torch.amp.autocast(dtype=torch.bfloat16, device_type=torch.device(self._device).type):
+            video_noise_pred, action_noise_pred = self.model(
+                training_targets["noisy_latents"].transpose(1, 2),
+                timestep=training_targets["timestep"],
+                clip_feature=policy_inputs["clip_feas"].to(self._device),
+                y=policy_inputs["ys"].to(self._device),
+                context=[prompt_emb.to(self._device) for prompt_emb in policy_inputs["prompt_embs"]],
+                seq_len=training_targets["seq_len"],
+                state=policy_inputs["state_features"],
+                embodiment_id=policy_inputs["embodiment_id"],
+                action=training_targets["noisy_actions"],
+                timestep_action=training_targets["timestep_action"],
+                clean_x=policy_inputs["video_latents"],
+            )
+
+            dynamics_loss_per_sample = torch.nn.functional.mse_loss(
+                video_noise_pred.float(),
+                training_targets["training_target"].float(),
+                reduction="none",
+            ).mean(dim=(1, 3, 4))
+            weight_dynamics = dynamics_loss_per_sample * self.scheduler.training_weight(
+                training_targets["timestep"].flatten(0, 1)
+            ).unflatten(
+                0,
+                (
+                    training_targets["timestep"].shape[0],
+                    training_targets["timestep"].shape[1],
+                ),
+            ).to(self._device)
+            weighted_dynamics_loss = weight_dynamics.mean()
+
+            action_loss_per_sample = torch.nn.functional.mse_loss(
+                action_noise_pred.float(),
+                training_targets["training_target_action"].float(),
+                reduction="none",
+            ) * policy_inputs["action_mask"]
+            action_loss_per_sample = (
+                policy_inputs["has_real_action"][:, None, None].float()
+                * action_loss_per_sample
+            )
+            weight_action = action_loss_per_sample.mean(dim=2) * self.scheduler.training_weight(
+                training_targets["timestep_action"].flatten(0, 1)
+            ).unflatten(
+                0,
+                (
+                    training_targets["timestep_action"].shape[0],
+                    training_targets["timestep_action"].shape[1],
+                ),
+            ).to(self._device)
+            weighted_action_loss = weight_action.mean()
+            loss = weighted_dynamics_loss + weighted_action_loss
+
+        return BatchFeature(
+            data={
+                "loss": loss,
+                "dynamics_loss": weighted_dynamics_loss,
+                "action_loss": weighted_action_loss,
+            }
+        )
+
     def lazy_joint_video_action(self, backbone_output: BatchFeature, action_input: BatchFeature, latent_video=None) -> BatchFeature:
         """Run local lazy inference implementation."""
         return self.sample_action_video(backbone_output=backbone_output, action_input=action_input)
@@ -23,7 +98,7 @@ class DreamZeroActionHead(WANPolicyHead):
     def sample_action_video(self, backbone_output: BatchFeature, action_input: BatchFeature) -> BatchFeature:
         """Sample action video from DreamZero."""
         self.set_frozen_modules_to_eval_mode()
-        policy_inputs = self.prepare_policy_inputs(data=action_input)
+        policy_inputs = self.prepare_policy_inputs(data=action_input, mode="inference")
         sampling_state = self.prepare_noise_action_video(policy_inputs)
         kv_caches, crossattn_caches = self.prepare_kv_cache(sampling_state["noise_obs"])
         self.warmup_kv_cache(policy_inputs, sampling_state, kv_caches, crossattn_caches)
@@ -34,8 +109,8 @@ class DreamZeroActionHead(WANPolicyHead):
             crossattn_caches=crossattn_caches,
         )
 
-    def prepare_policy_inputs(self, data: BatchFeature) -> BatchFeature:
-        """Prepare single-frame DreamZero policy inputs."""
+    def prepare_policy_inputs(self, data: BatchFeature, mode: str = "inference") -> BatchFeature:
+        """Prepare DreamZero policy inputs for inference or training."""
         # embodiment id input
         embodiment_id = data.embodiment_id
         # state features input
@@ -52,17 +127,27 @@ class DreamZeroActionHead(WANPolicyHead):
         clip_feas = clip_feas.to(dtype=image_latents.dtype)
         ys = ys.to(dtype=image_latents.dtype)
         self.current_start_frame = 0
-        return BatchFeature(
-            data={
+        outputs = {
                 "videos": videos,
                 "embodiment_id": embodiment_id,
                 "state_features": state_features,
                 "prompt_embs": prompt_embs,
-                "image_latents": image_latents,
                 "clip_feas": clip_feas,
                 "ys": ys,
             }
-        )
+        if mode == "inference":
+            outputs["image_latents"] = image_latents
+        elif mode == "training":
+            outputs["actions"] = data.action
+            outputs["has_real_action"] = data.has_real_action
+            outputs["action_mask"] = data.action_mask
+            outputs["video_latents"] = self.encode_video(
+                videos,
+                self.tiled,
+                (self.tile_size_height, self.tile_size_width),
+                (self.tile_stride_height, self.tile_stride_width),
+            )
+        return BatchFeature(data=outputs)
 
     def prepare_noise_action_video(self, policy_inputs: BatchFeature) -> BatchFeature:
         """Prepare initial video/action noise and diffusion shapes."""
@@ -82,13 +167,96 @@ class DreamZeroActionHead(WANPolicyHead):
             device="cuda",
             dtype=torch.bfloat16,
         )
+        noise_obs = noise_obs.transpose(1, 2)
+        image_latents = image_latents.transpose(1, 2)
+        outputs = {
+            "noise_obs": noise_obs,
+            "noise_action": noise_action,
+            "image_latents": image_latents,
+        }
+        return BatchFeature(data=outputs)
+
+    def build_training_noise_targets(
+        self,
+        policy_inputs: BatchFeature,
+    ) -> BatchFeature:
+        """Build timestep-aligned noisy inputs and training targets."""
+        latents = policy_inputs["video_latents"].transpose(1, 2)
+        actions = policy_inputs["actions"]
+        noise = self.generate_noise(
+            latents.transpose(1, 2).shape,
+            seed=self.seed,
+            device=latents.device,
+            dtype=latents.dtype,
+        ).transpose(1, 2)
+        noise_action = None
+        if actions.numel() > 0:
+            noise_action = self.generate_noise(
+                actions.shape,
+                seed=self.seed,
+                device=actions.device,
+                dtype=actions.dtype,
+            )
+        # build timestep and block timestep
+        timestep_id = torch.randint(
+            0,
+            self.scheduler.num_train_timesteps,
+            (noise.shape[0], noise.shape[1]),
+            device=noise.device,
+        )
+        timestep_id_block = timestep_id[:, 1:].reshape(
+            timestep_id.shape[0], -1, self.num_frame_per_block
+        )
+        timestep_id_block[:, :, 1:] = timestep_id_block[:, :, 0:1]
+        # build action timestep
+        timestep_action_id = timestep_id_block.repeat(
+            1, 1, actions.shape[1] // (noise.shape[1] - 1)
+        )
+        timestep_action_id = timestep_action_id.reshape(
+            timestep_action_id.shape[0], -1
+        )
+        # map back to timestep
+        timestep_id_block = timestep_id_block.reshape(timestep_id_block.shape[0], -1)
+        timestep_id = torch.concat([timestep_id[:, :1], timestep_id_block], dim=1)
+        # build latent noisy video and target 
+        timestep = self.scheduler.timesteps[timestep_id].to(self._device)
+        noisy_latents = self.scheduler.add_noise(
+            latents.flatten(0, 1),
+            noise.flatten(0, 1),
+            timestep.flatten(0, 1),
+        ).unflatten(0, (noise.shape[0], noise.shape[1]))
+        training_target = self.scheduler.training_target(latents, noise, timestep).transpose(1, 2)
+        # build latent noisy action and target 
+        _, num_frames, _, height, width = noise.shape
+        frame_seqlen = (height // 2) * (width // 2)
+        seq_len = num_frames * frame_seqlen
+        if actions.numel() > 0:
+            timestep_action = self.scheduler.timesteps[timestep_action_id].to(self._device)
+            noisy_actions = self.scheduler.add_noise(
+                actions.flatten(0, 1),
+                noise_action.flatten(0, 1),
+                timestep_action.flatten(0, 1),
+            ).unflatten(0, (noise_action.shape[0], noise_action.shape[1]))
+            training_target_action = self.scheduler.training_target(
+                actions,
+                noise_action,
+                timestep_action,
+            )
+        else:
+            timestep_action = None
+            noisy_actions = None
+            training_target_action = None
         return BatchFeature(
             data={
-                # Keep intermediate sampling tensors in `[B, T, C, H, W]` so
-                # scheduler samples and seq_len calculations both use frame-major layout.
-                "image_latents": image_latents.transpose(1, 2),
-                "noise_obs": noise_obs.transpose(1, 2),
-                "noise_action": noise_action,
+                "timestep_id": timestep_id,
+                "timestep_action_id": timestep_action_id,
+                "timestep": timestep,
+                "timestep_action": timestep_action,
+                "noisy_latents": noisy_latents,
+                "noisy_actions": noisy_actions,
+                "training_target": training_target,
+                "training_target_action": training_target_action,
+                "seq_len": seq_len,
             }
         )
 
