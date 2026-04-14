@@ -299,13 +299,17 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         v_theta = output_dict["v_theta"][:, :chunk, :]
         x_t = forward_inputs["nft_xcur"][:, :chunk, :]
         v_old = forward_inputs["nft_v"][:, :chunk, :].detach()
+        batch_size, chunk_len = x_t.shape[:2]
         if sum_type == "action_level":
             sum_dims = tuple(range(2, x_t.ndim))
+            loss_mask = batch["loss_mask"].expand(batch_size, chunk_len)
+            advantages = batch["advantages"].expand(batch_size, chunk_len)
         elif sum_type == "chunk_level":
             sum_dims = tuple(range(1, x_t.ndim))
-        batch_size, chunk_len = x_t.shape[:2]
-        loss_mask = batch["loss_mask"].expand(batch_size, chunk_len)
-        advantages = batch["advantages"].expand(batch_size, chunk_len)
+            loss_mask = batch["loss_mask"].reshape(batch_size, -1)[:, 0]
+            advantages = batch["advantages"].reshape(batch_size, -1)[:, 0]
+        else:
+            raise ValueError(f"Unsupported nft_sum_type: {sum_type}")
         adv_clip_max = float(self.cfg.algorithm.get("adv_clip_max", 1.0))
         # clip delta v and get pos/neg candidates
         delta_v, clip_coef, v_pos, v_neg = self._compute_clipped_delta_v(
