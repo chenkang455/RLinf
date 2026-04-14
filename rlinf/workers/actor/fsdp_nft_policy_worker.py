@@ -58,25 +58,9 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
 
     def get_rollout_state_dict(self) -> dict:
         """Return rollout model weights (lagged if tau<1, or training weights if tau=1)."""
-        model_dict = self.get_model_state_dict(cpu_offload=False, full_state_dict=True)
         if self.nft_tau >= 1.0:
-            return model_dict
-        # merge rollout and training model state dicts
-        merged_state_dict = {}
-        for key, base_value in model_dict.items():
-            if key not in self.rollout_model_state_dict:
-                merged_state_dict[key] = base_value
-                continue
-
-            rollout_value = self.rollout_model_state_dict[key]
-            if torch.is_tensor(rollout_value) and torch.is_tensor(base_value):
-                merged_state_dict[key] = rollout_value.to(
-                    device=base_value.device,
-                    dtype=base_value.dtype,
-                )
-            else:
-                merged_state_dict[key] = rollout_value
-        return merged_state_dict
+            return self.get_model_state_dict(cpu_offload=False, full_state_dict=True)
+        return self.rollout_model_state_dict
 
     def soft_update_rollout_model(self) -> None:
         """Soft update rollout model: state = (1-tau)*state + tau*current. No-op when tau=1."""
@@ -298,6 +282,7 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         target_space = self.cfg.algorithm.get("nft_target_space", "xnext")
         x_t_input = forward_inputs["nft_xcur"]
         step_indices = forward_inputs["nft_step_index"]
+        sum_type = self.cfg.algorithm.get("nft_sum_type", "action_level")
         schedule, t = self._build_schedule_and_timesteps(
             step_indices, x_t_input.device, x_t_input.dtype
         )
@@ -314,7 +299,10 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         v_theta = output_dict["v_theta"][:, :chunk, :]
         x_t = forward_inputs["nft_xcur"][:, :chunk, :]
         v_old = forward_inputs["nft_v"][:, :chunk, :].detach()
-        sum_dims = tuple(range(2, x_t.ndim))
+        if sum_type == "action_level":
+            sum_dims = tuple(range(2, x_t.ndim))
+        elif sum_type == "chunk_level":
+            sum_dims = tuple(range(1, x_t.ndim))
         batch_size, chunk_len = x_t.shape[:2]
         loss_mask = batch["loss_mask"].expand(batch_size, chunk_len)
         advantages = batch["advantages"].expand(batch_size, chunk_len)
