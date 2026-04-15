@@ -26,6 +26,8 @@ def get_model(cfg: DictConfig):
         from rlinf.models.embodiment.openvla_oft import get_model
     elif model_type == SupportedModel.OPENPI:
         from rlinf.models.embodiment.openpi import get_model
+    elif model_type == SupportedModel.STARVLA:
+        from rlinf.models.embodiment.starvla import get_model
     elif model_type == SupportedModel.DEXBOTIC_PI:
         from rlinf.models.embodiment.dexbotic_pi import get_model
     elif model_type == SupportedModel.DREAMZERO:
@@ -46,7 +48,7 @@ def get_model(cfg: DictConfig):
     torch_dtype = torch_dtype_from_precision(cfg.precision)
     model = get_model(cfg, torch_dtype)
 
-    if Worker.torch_platform.is_available():
+    if Worker.torch_platform.is_available() and model_type != SupportedModel.DREAMZERO:
         model = model.to(Worker.torch_device_type)
 
     if cfg.is_lora:
