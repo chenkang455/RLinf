@@ -45,7 +45,7 @@ actor:
 
   model:
     model_type: "dreamzero"
-    precision: bf16
+    precision: fp32
     model_path: "/mnt/project_rlinf/liyanghao/data/models/DreamZero-DROID"
     tokenizer_path: "/mnt/project_rlinf/liyanghao/data/models/umt5-xxl"
     max_seq_len: 512
@@ -79,9 +79,9 @@ actor:
     sharding_strategy: "full_shard"
     use_orig_params: True
     gradient_checkpointing: True
-    #cpu_offload: True
+    cpu_offload: True
     limit_all_gathers: True
-    #offload_pin_memory: True
+    offload_pin_memory: True
     grad_scaler:
       enabled: False
     mixed_precision:

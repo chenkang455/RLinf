@@ -46,7 +46,7 @@ def get_model(cfg: DictConfig):
     torch_dtype = torch_dtype_from_precision(cfg.precision)
     model = get_model(cfg, torch_dtype)
 
-    if Worker.torch_platform.is_available():
+    if Worker.torch_platform.is_available() and model_type != SupportedModel.DREAMZERO:
         model = model.to(Worker.torch_device_type)
 
     if cfg.is_lora:
