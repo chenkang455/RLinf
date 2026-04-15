@@ -16,6 +16,7 @@ class DreamZeroActionHead(WANPolicyHead):
 
     config_class = WANPolicyHeadConfig
 
+    # ================ SFT Training ================
     def forward(self, backbone_output: BatchFeature, action_input: BatchFeature) -> BatchFeature:
         """Run the local DreamZero training forward path."""
         self.set_frozen_modules_to_eval_mode()
@@ -202,7 +203,6 @@ class DreamZeroActionHead(WANPolicyHead):
             0,
             self.scheduler.num_train_timesteps,
             (noise.shape[0], noise.shape[1]),
-            device=noise.device,
         )
         timestep_id_block = timestep_id[:, 1:].reshape(
             timestep_id.shape[0], -1, self.num_frame_per_block
