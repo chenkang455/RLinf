@@ -492,6 +492,7 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
             "constant"  -- fixed scalar ``nft_weight_scale`` (default 1.0).
             "t"        -- 1 / (t^2 or dt^2), scaled by ``nft_weight_scale``.
             "inv_t2"   -- 1 / (t^2 + eps), compensates x0 target gradient ∝ t^2.
+            "inv_t3"   -- 1 / (t^3 + eps), overcompensates to bias toward low-t.
             "sigma"    -- 1 / (std_t_det^2 + eps).
             "adaptive" -- 1 / abs-error-mean (stop-grad), a la DiffusionNFT.
             "auto"     -- "adaptive" when noise_level==0 (ODE), otherwise "sigma" (SDE).
@@ -512,6 +513,8 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
             weight *= (1 - t_bc)**2
         elif weight_mode == "inv_t2":
             weight /= t_bc**2 + 1e-4
+        elif weight_mode == "inv_t3":
+            weight /= t_bc**3 + 1e-4
         elif weight_mode == "sigma":
             # loss in pi-step-nft paper
             weight /= std_t_det**2 + 1e-4
