@@ -29,7 +29,7 @@ runner:
   log_interval: 100
 
 data:
-  train_data_paths: "/mnt/project_rlinf_hs/yuanhuining/datasets/libero"
+  train_data_paths: "path/to/datasets/libero"
 
 algorithm:
   adv_type: gae
@@ -45,9 +45,9 @@ actor:
 
   model:
     model_type: "dreamzero"
-    precision: fp32
-    model_path: "/mnt/project_rlinf/liyanghao/data/models/DreamZero-DROID"
-    tokenizer_path: "/mnt/project_rlinf/liyanghao/data/models/umt5-xxl"
+    precision: bf16 # fp32 when fsdp cpu offload is enabled
+    model_path: "path/to/models/DreamZero-DROID"
+    tokenizer_path: "path/to/models/umt5-xxl"
     max_seq_len: 512
     dreamzero_action_horizon: 16
     dreamzero_num_chunks: 4
@@ -79,9 +79,10 @@ actor:
     sharding_strategy: "full_shard"
     use_orig_params: True
     gradient_checkpointing: True
-    cpu_offload: True
     limit_all_gathers: True
-    offload_pin_memory: True
+    reshard_after_forward: True
+    # cpu_offload: True
+    # offload_pin_memory: True
     grad_scaler:
       enabled: False
     mixed_precision:

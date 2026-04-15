@@ -1,3 +1,17 @@
+# Copyright 2026 The RLinf Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """DreamZero SFT data utilities for LIBERO.
 
 Provides DreamZeroLiberoDataset and DreamZeroCollator that convert
@@ -130,17 +144,19 @@ class DreamZeroLiberoDataset(Dataset):
     def __init__(
         self,
         data_path: str | list[str],
-        action_horizon: int = 64,   # Total action steps = ACTION_CHUNK_SIZE * num_chunks
-        num_chunks: int = 4,        # Number of temporal chunks (matches dreamzero_num_chunks in config)
-        max_action_dim: int = 32,   # Padding target for action dim (LIBERO uses 7, padded to 32)
-        max_state_dim: int = 64,    # Padding target for state dim  (LIBERO uses 8, padded to 64)
+        action_horizon: int = 64,  # Total action steps = ACTION_CHUNK_SIZE * num_chunks
+        num_chunks: int = 4,  # Number of temporal chunks (matches dreamzero_num_chunks in config)
+        max_action_dim: int = 32,  # Padding target for action dim (LIBERO uses 7, padded to 32)
+        max_state_dim: int = 64,  # Padding target for state dim  (LIBERO uses 8, padded to 64)
         cfg_mode: bool = False,
         advantage_parquet: str | None = None,
         unconditional_prob: float = 0.3,
     ):
         if isinstance(data_path, (list, tuple)):
             if len(data_path) == 0:
-                raise ValueError("DreamZeroLiberoDataset requires at least one data path.")
+                raise ValueError(
+                    "DreamZeroLiberoDataset requires at least one data path."
+                )
             data_path = data_path[0]
         self.data_path = str(data_path)
         self.num_chunks = num_chunks
@@ -149,7 +165,7 @@ class DreamZeroLiberoDataset(Dataset):
         # Total video frames returned per sample: 4 chunks * 8 frames + 1 boundary = 33
         self.video_horizon = self.video_frames_per_chunk * num_chunks + 1
         # One state snapshot per chunk start frame
-        self.state_horizon = num_chunks   # 4
+        self.state_horizon = num_chunks  # 4
         self.max_action_dim = max_action_dim
         self.max_state_dim = max_state_dim
         self.cfg_mode = bool(cfg_mode)
@@ -176,8 +192,8 @@ class DreamZeroLiberoDataset(Dataset):
         ac = gear_stats.get("action.actions") or gear_stats.get("actions") or {}
         self._state_q01 = st.get("q01")  # shape (8,) for LIBERO
         self._state_q99 = st.get("q99")  # shape (8,)
-        self._action_q01 = ac.get("q01") # shape (7,) for LIBERO
-        self._action_q99 = ac.get("q99") # shape (7,)
+        self._action_q01 = ac.get("q01")  # shape (7,) for LIBERO
+        self._action_q99 = ac.get("q99")  # shape (7,)
 
         # Precompute frame index offsets for video, state, and action sampling
         # video_offsets: list of 33 relative frame offsets
@@ -186,7 +202,7 @@ class DreamZeroLiberoDataset(Dataset):
             base = c * self.VIDEO_CHUNK_STRIDE
             video_steps.extend(base + o for o in self.VIDEO_CHUNK_OFFSETS)
         video_steps.append(video_steps[-1] + 2)  # extra boundary frame
-        self._video_offsets = video_steps          # len=33
+        self._video_offsets = video_steps  # len=33
         # state_offsets: [0, 16, 32, 48] — one per chunk start
         self._state_offsets = [c * self.VIDEO_CHUNK_STRIDE for c in range(num_chunks)]
         # action_offsets: [0, 1, 2, ..., 63] — dense consecutive steps
@@ -261,7 +277,10 @@ class DreamZeroLiberoDataset(Dataset):
         elapsed = time.monotonic() - t0
         logger.info(
             "Loaded advantage parquet (%d rows, %d episodes) from %s in %.1fs",
-            len(df), len(advantage_map), adv_path, elapsed,
+            len(df),
+            len(advantage_map),
+            adv_path,
+            elapsed,
         )
 
     def _lookup_advantage(self, episode_index: int, frame_index: int) -> bool:
@@ -280,7 +299,9 @@ class DreamZeroLiberoDataset(Dataset):
         if fi < 0 or fi >= len(values):
             logger.warning(
                 "frame_index=%d out of range [0, %d] for episode %d; clamping to boundary",
-                fi, len(values) - 1, episode_index,
+                fi,
+                len(values) - 1,
+                episode_index,
             )
             fi = min(max(fi, 0), len(values) - 1)
         return bool(values[fi])
@@ -295,7 +316,9 @@ class DreamZeroLiberoDataset(Dataset):
 
         delta_timestamps = {
             "observation.images.image": [t / self._fps for t in self._video_offsets],
-            "observation.images.wrist_image": [t / self._fps for t in self._video_offsets],
+            "observation.images.wrist_image": [
+                t / self._fps for t in self._video_offsets
+            ],
             "observation.state": [t / self._fps for t in self._state_offsets],
             "action": [t / self._fps for t in self._action_offsets],
         }
@@ -319,9 +342,8 @@ class DreamZeroLiberoDataset(Dataset):
           actions      list<float>            length 7  (joint deltas)
           task_index   int64
         """
+
         import pyarrow.parquet as pq
-        from io import BytesIO
-        from PIL import Image
 
         data_root = Path(self.data_path) / "data"
         episodes_path = Path(self.data_path) / "meta" / "episodes.jsonl"
@@ -338,7 +360,9 @@ class DreamZeroLiberoDataset(Dataset):
         for ep in self._episodes:
             ep_idx = ep["episode_index"]
             chunk_idx = ep_idx // 1000
-            pq_path = data_root / f"chunk-{chunk_idx:03d}" / f"episode_{ep_idx:06d}.parquet"
+            pq_path = (
+                data_root / f"chunk-{chunk_idx:03d}" / f"episode_{ep_idx:06d}.parquet"
+            )
             table = pq.read_table(pq_path)
             n_frames = len(table)
             self._ep_frames.append(n_frames)
@@ -361,6 +385,7 @@ class DreamZeroLiberoDataset(Dataset):
         """
         if ep_idx not in self._pq_cache:
             import pyarrow.parquet as pq
+
             self._pq_cache[ep_idx] = pq.read_table(str(self._ep_parquet_paths[ep_idx]))
             if len(self._pq_cache) > 50:
                 oldest = next(iter(self._pq_cache))
@@ -374,7 +399,9 @@ class DreamZeroLiberoDataset(Dataset):
         Output shape: (H=256, W=256, C=3), dtype=uint8.
         """
         from io import BytesIO
+
         from PIL import Image
+
         raw = cell.as_py()
         if isinstance(raw, dict):
             raw = raw.get("bytes", raw)
@@ -409,15 +436,21 @@ class DreamZeroLiberoDataset(Dataset):
             return min(max(frame_in_ep + offset, 0), n - 1)
 
         # Decode 33 video frames for main camera: shape (33, 256, 256, 3) uint8
-        main_imgs = np.stack([
-            self._decode_v2_image(table.column("image")[clamp(o)])
-            for o in self._video_offsets
-        ], axis=0)
+        main_imgs = np.stack(
+            [
+                self._decode_v2_image(table.column("image")[clamp(o)])
+                for o in self._video_offsets
+            ],
+            axis=0,
+        )
         # Decode 33 video frames for wrist camera: shape (33, 256, 256, 3) uint8
-        wrist_imgs = np.stack([
-            self._decode_v2_image(table.column("wrist_image")[clamp(o)])
-            for o in self._video_offsets
-        ], axis=0)
+        wrist_imgs = np.stack(
+            [
+                self._decode_v2_image(table.column("wrist_image")[clamp(o)])
+                for o in self._video_offsets
+            ],
+            axis=0,
+        )
 
         # State at 4 chunk-start frames: shape (4, 8) float32
         state_rows = [clamp(o) for o in self._state_offsets]
@@ -427,7 +460,9 @@ class DreamZeroLiberoDataset(Dataset):
         # Action sequence for 64 consecutive steps: shape (64, 7) float32
         action_rows = [clamp(o) for o in self._action_offsets]
         action_col = table.column("actions")
-        action = np.array([action_col[r].as_py() for r in action_rows], dtype=np.float32)
+        action = np.array(
+            [action_col[r].as_py() for r in action_rows], dtype=np.float32
+        )
 
         task_idx = int(table.column("task_index")[frame_in_ep].as_py())
 
@@ -467,9 +502,10 @@ class DreamZeroLiberoDataset(Dataset):
 
         tasks_df = pd.read_parquet(task_path)
 
-        if (
-            list(tasks_df.columns) == ["task_index"]
-            and tasks_df.index.dtype.kind in ("U", "O", "S")
+        if list(tasks_df.columns) == ["task_index"] and tasks_df.index.dtype.kind in (
+            "U",
+            "O",
+            "S",
         ):
             for text, row in tasks_df.iterrows():
                 task_map[int(row["task_index"])] = str(text)
@@ -509,7 +545,9 @@ class DreamZeroLiberoDataset(Dataset):
             arr = np.transpose(arr, (1, 2, 0))
         return arr
 
-    def _build_video_grid(self, main_frames: np.ndarray, wrist_frames: np.ndarray) -> np.ndarray:
+    def _build_video_grid(
+        self, main_frames: np.ndarray, wrist_frames: np.ndarray
+    ) -> np.ndarray:
         """Horizontally concatenate main and wrist views.
 
         Input:  main_frames  (T, H, W, 3) uint8   e.g. (33, 256, 256, 3)
@@ -547,12 +585,15 @@ class DreamZeroLiberoDataset(Dataset):
         crop_h, crop_w = int(H * crop_scale), int(W * crop_scale)
         top = np.random.randint(0, H - crop_h + 1)
         left = np.random.randint(0, W - crop_w + 1)
-        images = images[:, top:top + crop_h, left:left + crop_w, :]
+        images = images[:, top : top + crop_h, left : left + crop_w, :]
         # Resize each frame back to original resolution: (T, H, W, C)
-        resized = np.stack([
-            cv2.resize(images[t], (W, H), interpolation=cv2.INTER_LINEAR)
-            for t in range(T)
-        ], axis=0)
+        resized = np.stack(
+            [
+                cv2.resize(images[t], (W, H), interpolation=cv2.INTER_LINEAR)
+                for t in range(T)
+            ],
+            axis=0,
+        )
 
         result = resized.astype(np.float32)
 
@@ -569,7 +610,11 @@ class DreamZeroLiberoDataset(Dataset):
         # --- Step 4: Saturation jitter — lerp between grayscale and color ---
         saturation = 1.0 + np.random.uniform(-0.5, 0.5)
         # Luminance approximation: Y = 0.299R + 0.587G + 0.114B
-        gray = 0.299 * result[..., 0:1] + 0.587 * result[..., 1:2] + 0.114 * result[..., 2:3]
+        gray = (
+            0.299 * result[..., 0:1]
+            + 0.587 * result[..., 1:2]
+            + 0.114 * result[..., 2:3]
+        )
         result = (result - gray) * saturation + gray  # saturation=0 -> grayscale
 
         # --- Step 5: Hue shift (applied in HSV space) ---
@@ -671,7 +716,9 @@ class DreamZeroLiberoDataset(Dataset):
         else:
             action = np.clip(action, -1.0, 1.0)
         # Zero-pad to (64, 32)
-        action_pad = np.zeros((self.action_horizon, self.max_action_dim), dtype=np.float32)
+        action_pad = np.zeros(
+            (self.action_horizon, self.max_action_dim), dtype=np.float32
+        )
         action_dim = min(action.shape[-1], self.max_action_dim)
         action_pad[:, :action_dim] = action[:, :action_dim]
         action_mask = np.zeros((self.action_horizon, self.max_action_dim), dtype=bool)
@@ -705,13 +752,13 @@ class DreamZeroLiberoDataset(Dataset):
 
         return {
             # Core training fields
-            "images": images,                              # (33, 256, 512, 3) uint8
-            "state": state_pad,                            # (4, 64)           float32
-            "state_mask": state_mask,                      # (4, 64)           bool
-            "action": action_pad,                          # (64, 32)          float32
-            "action_mask": action_mask,                    # (64, 32)          bool
+            "images": images,  # (33, 256, 512, 3) uint8
+            "state": state_pad,  # (4, 64)           float32
+            "state_mask": state_mask,  # (4, 64)           bool
+            "action": action_pad,  # (64, 32)          float32
+            "action_mask": action_mask,  # (64, 32)          bool
             "embodiment_id": np.int64(self.embodiment_id),  # ()  int64
-            "has_real_action": np.bool_(True),             # ()                bool
+            "has_real_action": np.bool_(True),  # ()                bool
             # Fields required by VLA.forward() signature but unused in SFT:
             "has_lapa_action": np.bool_(False),
             "is_cotrain_instance": np.bool_(False),
@@ -743,12 +790,14 @@ class DreamZeroCollator:
     """
 
     def __init__(self, tokenizer_path: str, max_seq_len: int, cfg_mode: bool = False):
-        from groot.vla.model.dreamzero.transform.dreamzero_cotrain import HuggingfaceTokenizer
+        from groot.vla.model.dreamzero.transform.dreamzero_cotrain import (
+            HuggingfaceTokenizer,
+        )
 
         # HuggingfaceTokenizer wraps the umt5-xxl tokenizer with fixed output length (512)
         self.tokenizer = HuggingfaceTokenizer(
             name=tokenizer_path,
-            seq_len=max_seq_len,     # output token IDs are padded/truncated to this length
+            seq_len=max_seq_len,  # output token IDs are padded/truncated to this length
             clean="whitespace",
         )
         self.cfg_mode = bool(cfg_mode)
@@ -758,10 +807,19 @@ class DreamZeroCollator:
 
         # Stack all array fields along a new batch dimension (axis 0)
         for key in [
-            "images", "state", "state_mask", "action", "action_mask",
-            "embodiment_id", "has_real_action", "has_lapa_action",
-            "is_cotrain_instance", "segmentation_target",
-            "segmentation_target_mask", "lapa_action", "lapa_action_mask",
+            "images",
+            "state",
+            "state_mask",
+            "action",
+            "action_mask",
+            "embodiment_id",
+            "has_real_action",
+            "has_lapa_action",
+            "is_cotrain_instance",
+            "segmentation_target",
+            "segmentation_target_mask",
+            "lapa_action",
+            "lapa_action_mask",
         ]:
             values = [f[key] for f in features]
             batch[key] = torch.as_tensor(np.stack(values, axis=0))
@@ -779,8 +837,8 @@ class DreamZeroCollator:
         text_ids, text_mask = self.tokenizer(
             text_values, return_mask=True, add_special_tokens=True
         )
-        batch["text"] = torch.as_tensor(text_ids)                # (B, 512) int64
-        batch["text_attention_mask"] = torch.as_tensor(text_mask) # (B, 512) int64
+        batch["text"] = torch.as_tensor(text_ids)  # (B, 512) int64
+        batch["text_attention_mask"] = torch.as_tensor(text_mask)  # (B, 512) int64
         return batch
 
 
@@ -801,7 +859,9 @@ def build_dreamzero_sft_dataloader(
     model_cfg = cfg.actor.model
     tokenizer_path = model_cfg.get("tokenizer_path", "google/umt5-xxl")
     max_seq_len = int(model_cfg.get("max_seq_len", 512))
-    action_chunk_size = int(model_cfg.get("dreamzero_action_horizon", 16))  # steps per chunk
+    action_chunk_size = int(
+        model_cfg.get("dreamzero_action_horizon", 16)
+    )  # steps per chunk
     num_chunks = int(model_cfg.get("dreamzero_num_chunks", 4))
     effective_action_horizon = action_chunk_size * num_chunks  # = 64 total action steps
     max_action_dim = int(model_cfg.get("dreamzero_max_action_dim", 32))
@@ -837,7 +897,7 @@ def build_dreamzero_sft_dataloader(
         shuffle=False,
         drop_last=not eval_dataset,
         num_workers=num_workers,
-        pin_memory=True,        # faster CPU->GPU transfer
+        pin_memory=True,  # faster CPU->GPU transfer
         persistent_workers=num_workers > 0,
         collate_fn=DreamZeroCollator(
             tokenizer_path=tokenizer_path,

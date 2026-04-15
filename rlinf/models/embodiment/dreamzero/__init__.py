@@ -13,10 +13,9 @@
 # limitations under the License.
 
 import json
-import torch
-import torch.nn as nn
 from pathlib import Path
 
+import torch.nn as nn
 from groot.vla.data.schema import DatasetMetadata
 from groot.vla.data.transform import ComposedModalityTransform
 from hydra.utils import instantiate
@@ -27,6 +26,7 @@ from rlinf.models.embodiment.dreamzero.dreamzero_policy import (
     DreamZeroConfig,
     DreamZeroPolicy,
 )
+
 
 def _promote_scalar_params_to_1d(model):
     """FSDP does not support 0-d parameters, so we promote scalar Parameters to shape=[1]."""
@@ -45,6 +45,7 @@ def _promote_scalar_params_to_1d(model):
             requires_grad=old_p.requires_grad,
         )
         setattr(module, param_name, new_p)
+
 
 def get_model(cfg: DictConfig, torch_dtype=None):
     """Load DreamZero policy from checkpoint."""

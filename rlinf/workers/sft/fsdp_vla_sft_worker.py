@@ -56,9 +56,11 @@ class FSDPVlaSftWorker(FSDPSftWorker):
         elif SupportedModel(self.cfg.actor.model.model_type) in [
             SupportedModel.DREAMZERO
         ]:
+            self._dreamzero_loss = None
             from rlinf.data.datasets.dreamzero import (
                 build_dreamzero_sft_dataloader,
             )
+
             return build_dreamzero_sft_dataloader(
                 self.cfg, self._world_size, self._rank, data_paths, eval_dataset
             )
@@ -74,7 +76,7 @@ class FSDPVlaSftWorker(FSDPSftWorker):
     def get_train_model_output(self, batch: dict[str, Any]):
         if SupportedModel(self.cfg.actor.model.model_type) in [
             SupportedModel.LINGBOTVLA,
-            SupportedModel.DREAMZERO
+            SupportedModel.DREAMZERO,
         ]:
             batch_data = _pytree.tree_map(
                 lambda x: (
@@ -118,9 +120,11 @@ class FSDPVlaSftWorker(FSDPSftWorker):
     def run_training(self):
         train_metrics = super().run_training()
         if self._dreamzero_loss is not None:
-            train_metrics.update({
-                "dynamics_loss": self._dreamzero_loss["dynamics_loss"],
-                "action_loss": self._dreamzero_loss["action_loss"],
-            })
+            train_metrics.update(
+                {
+                    "dynamics_loss": self._dreamzero_loss["dynamics_loss"],
+                    "action_loss": self._dreamzero_loss["action_loss"],
+                }
+            )
             self._dreamzero_loss = None
         return train_metrics
