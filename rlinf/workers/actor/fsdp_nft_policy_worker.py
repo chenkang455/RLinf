@@ -379,6 +379,7 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         with torch.no_grad():
             metrics_data = {
                 "actor/nft_loss": loss.item(),
+                "actor/nft_tau": self._get_current_nft_tau(),
                 "actor/delta_v_norm": delta_v.norm(dim=sum_dims).mean().item(),
                 "actor/clip_frac": (clip_coef < 1).float().mean().item(),
                 "actor/E_pos_mean": e_pos.mean().item(),
