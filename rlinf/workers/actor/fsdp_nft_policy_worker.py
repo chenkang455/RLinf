@@ -17,6 +17,7 @@ import os
 import numpy as np
 import torch
 import torch.nn.functional as F
+from omegaconf import ListConfig
 
 from rlinf.models.embodiment.base_policy import ForwardType
 from rlinf.scheduler.worker.worker import Worker
@@ -44,10 +45,16 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
 
     def init_rollout_model(self) -> None:
         """Initialize rollout model state for off-policy support."""
-        self.nft_tau = float(self.cfg.algorithm.get("nft_tau", 1.0))
-        if self.nft_tau < 1.0:
+        self.rollout_model_state_dict = {}
+        tau = self.cfg.algorithm.get("nft_tau", 1.0)
+        if isinstance(tau, ListConfig):
+            tau = list(tau)
+            need_rollout_state = min(float(tau[0]), float(tau[1])) < 1.0
+        else:
+            need_rollout_state = float(tau) < 1.0
+        # init rollout model state dict
+        if need_rollout_state:
             src = self.get_model_state_dict(cpu_offload=False, full_state_dict=True)
-            self.rollout_model_state_dict = {}
             for key, value in src.items():
                 if torch.is_tensor(value) and value.is_floating_point():
                     self.rollout_model_state_dict[key] = value.float().clone()
@@ -56,23 +63,48 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
                 else:
                     self.rollout_model_state_dict[key] = value
 
+    def _get_current_nft_tau(self) -> float:
+        """Return scalar tau or linearly annealed tau from [start, end, s0, s1]."""
+        tau = self.cfg.algorithm.get("nft_tau", 1.0)
+        if isinstance(tau, ListConfig):
+            tau = list(tau)
+        if isinstance(tau, (list, tuple)):
+            start_tau, end_tau = float(tau[0]), float(tau[1])
+            start_step, end_step = int(tau[2]), int(tau[3])
+            step = int(getattr(self, "version", 0))
+            if step <= start_step:
+                return start_tau
+            if step >= end_step:
+                return end_tau
+            ratio = 0.0 if start_step == end_step else (
+                (step - start_step) / float(end_step - start_step)
+            )
+            return start_tau + ratio * (end_tau - start_tau)
+        return float(tau)
+
     def get_rollout_state_dict(self) -> dict:
         """Return rollout model weights (lagged if tau<1, or training weights if tau=1)."""
-        if self.nft_tau >= 1.0:
+        tau = self._get_current_nft_tau()
+        if tau >= 1.0:
             return self.get_model_state_dict(cpu_offload=False, full_state_dict=True)
-        return self.rollout_model_state_dict
+        else:
+            return self.rollout_model_state_dict
 
     def soft_update_rollout_model(self) -> None:
         """Soft update rollout model: state = (1-tau)*state + tau*current. No-op when tau=1."""
         # TODO: potential bug on model state dict transfer, need to check
-        if self.nft_tau >= 1.0:
+        if not self.rollout_model_state_dict:
             return
+        tau = self._get_current_nft_tau()
         # soft update rollout model state dict
         current = self.get_model_state_dict(cpu_offload=False, full_state_dict=True)
         for key, rollout_tensor in self.rollout_model_state_dict.items():
             src = current[key]
             if torch.is_tensor(rollout_tensor) and rollout_tensor.is_floating_point():
-                rollout_tensor.lerp_(src.float(), self.nft_tau)
+                if tau >= 1.0:
+                    rollout_tensor.copy_(src.float())
+                else:
+                    rollout_tensor.lerp_(src.float(), tau)
             elif torch.is_tensor(rollout_tensor) and torch.is_tensor(src):
                 rollout_tensor.copy_(src)
             else:
@@ -228,7 +260,8 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         training_was_on_device = False
         cleanup_rollout_model = False
 
-        if self.nft_tau >= 1.0:
+        tau = self._get_current_nft_tau()
+        if tau >= 1.0:
             # On-policy: use training model directly
             ref_model = self.model
         else:
