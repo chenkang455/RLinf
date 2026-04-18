@@ -398,6 +398,8 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
                 "actor/clip_frac": (clip_coef < 1).float().mean().item(),
                 "actor/E_pos_mean": e_pos.mean().item(),
                 "actor/E_neg_mean": e_neg.mean().item(),
+                "actor/E_pos_mean_pos_only": masked_mean(e_pos, (advantages > 0.5) & loss_mask.bool()).item(),
+                "actor/E_neg_mean_neg_only": masked_mean(e_neg, (advantages < 0.5) & loss_mask.bool()).item(),
                 "actor/delta_E_mean": delta_e.mean().item(),
             }
         return loss, metrics_data
@@ -440,7 +442,7 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
             logit = (dpo_beta / 2.0) * y * delta_e
             return masked_mean(F.softplus(logit), loss_mask)
         elif loss_form == "mse":
-            advantages_clip = torch.clamp(advantages, -adv_clip_max, adv_clip_max)
+            advantages_clip = torch.clamp(advantages, 0.0, adv_clip_max)
             r = torch.clamp((advantages_clip / adv_clip_max), 0.0, 1.0)
             return masked_mean(r * e_pos + (1.0 - r) * e_neg, loss_mask)
         else:
