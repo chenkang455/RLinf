@@ -363,10 +363,24 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         noise_level = forward_inputs["nft_noise_level"]
         weight_mode = self.cfg.algorithm.get("nft_weight_mode", "auto")
         w_pos = self._compute_nft_weight(
-            weight_mode, t_bc, std_t_det, noise_level, target, sum_dims, pred=pred_pos
+            weight_mode,
+            t_bc,
+            std_t_det,
+            noise_level,
+            target,
+            sum_dims,
+            pred=pred_pos,
+            sample_type="pos",
         )
         w_neg = self._compute_nft_weight(
-            weight_mode, t_bc, std_t_det, noise_level, target, sum_dims, pred=pred_neg
+            weight_mode,
+            t_bc,
+            std_t_det,
+            noise_level,
+            target,
+            sum_dims,
+            pred=pred_neg,
+            sample_type="neg",
         )
         e_pos = ((pred_pos - target) ** 2 * w_pos).sum(dim=sum_dims)
         e_neg = ((pred_neg - target) ** 2 * w_neg).sum(dim=sum_dims)
@@ -519,6 +533,7 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         sum_dims: tuple[int, ...],
         *,
         pred: torch.Tensor,
+        sample_type: str,
     ) -> torch.Tensor | float:
         """Compute per-element multiplicative weight for NFT energy.
 
@@ -538,7 +553,17 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
             else:
                 weight_mode = "sigma"
         # weight computation
-        weight = float(self.cfg.algorithm.get("nft_weight_scale", 1.0))
+        weight = self.cfg.algorithm.get("nft_weight_scale", 1.0)
+        if isinstance(weight, ListConfig):
+            weight = list(weight)
+        if isinstance(weight, (list, tuple)):
+            if len(weight) != 2:
+                raise ValueError(
+                    "nft_weight_scale list must be [pos_scale, neg_scale]."
+                )
+            weight = float(weight[0] if sample_type == "pos" else weight[1])
+        else:
+            weight = float(weight)
         if weight_mode == "constant":
             pass
         elif weight_mode == "t":
