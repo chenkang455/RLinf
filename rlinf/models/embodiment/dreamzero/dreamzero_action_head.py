@@ -167,10 +167,16 @@ class DreamZeroActionHead(WANPolicyHead):
         """Prepare initial video/action noise and diffusion shapes."""
         # Reuse the encoded first-frame latents as the video-side reference block.
         image_latents = policy_inputs["image_latents"]
-        _, _, _, height, width = policy_inputs["videos"].shape
+        _, latent_channels, _, latent_height, latent_width = image_latents.shape
         # Sample the initial noisy video/action states for the denoising loop.
         noise_obs = self.generate_noise(
-            (image_latents.shape[0], 16, self.num_frame_per_block, height // 8, width // 8),
+            (
+                image_latents.shape[0],
+                latent_channels,
+                self.num_frame_per_block,
+                latent_height,
+                latent_width,
+            ),
             seed=self.seed,
             device="cuda",
             dtype=torch.bfloat16,
@@ -417,3 +423,37 @@ class DreamZeroActionHead(WANPolicyHead):
             assert videos.min() >= -1.0 and videos.max() <= 1.0, "videos must be in [-1,1] range"
             videos = videos.to(dtype=output_dtype)
         return videos.to(dtype=output_dtype)
+
+    def _resolve_target_video_size(self) -> tuple[int | None, int | None]:
+        """Resolve an optional target video size for Wan2.2/5B checkpoints."""
+        target_height = getattr(self.config, "target_video_height", None)
+        target_width = getattr(self.config, "target_video_width", None)
+        if target_height is not None and target_width is not None:
+            return target_height, target_width
+
+        if getattr(self.model, "frame_seqlen", None) in (50, 55):
+            # Match the upstream 5B fallback when the checkpoint config does not
+            # explicitly carry the resize target yet.
+            return 176, 320
+        return None, None
+
+    def _resize_videos_for_model(self, videos: torch.Tensor) -> torch.Tensor:
+        """Resize inputs when the backbone expects a fixed 5B resolution."""
+        target_height, target_width = self._resolve_target_video_size()
+        if target_height is None or target_width is None:
+            return videos
+
+        _, _, num_frames, height, width = videos.shape
+        if (height, width) == (target_height, target_width):
+            return videos
+
+        batch_size, channels, _, _, _ = videos.shape
+        resized = torch.nn.functional.interpolate(
+            videos.permute(0, 2, 1, 3, 4).reshape(batch_size * num_frames, channels, height, width),
+            size=(target_height, target_width),
+            mode="bilinear",
+            align_corners=False,
+        )
+        return resized.reshape(batch_size, num_frames, channels, target_height, target_width).permute(
+            0, 2, 1, 3, 4
+        )
