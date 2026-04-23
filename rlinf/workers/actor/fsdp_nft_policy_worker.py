@@ -56,9 +56,7 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         if need_rollout_state:
             src = self.get_model_state_dict(cpu_offload=False, full_state_dict=True)
             for key, value in src.items():
-                if torch.is_tensor(value) and value.is_floating_point():
-                    self.rollout_model_state_dict[key] = value.float().clone()
-                elif torch.is_tensor(value):
+                if torch.is_tensor(value):
                     self.rollout_model_state_dict[key] = value.clone()
                 else:
                     self.rollout_model_state_dict[key] = value
@@ -102,9 +100,9 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
             src = current[key]
             if torch.is_tensor(rollout_tensor) and rollout_tensor.is_floating_point():
                 if tau >= 1.0:
-                    rollout_tensor.copy_(src.float())
+                    rollout_tensor.copy_(src)
                 else:
-                    rollout_tensor.lerp_(src.float(), tau)
+                    rollout_tensor.lerp_(src.to(rollout_tensor.dtype), tau)
             elif torch.is_tensor(rollout_tensor) and torch.is_tensor(src):
                 rollout_tensor.copy_(src)
             else:
@@ -343,7 +341,7 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
             advantages = batch["advantages"].reshape(batch_size, -1)[:, 0]
         else:
             raise ValueError(f"Unsupported nft_sum_type: {sum_type}")
-        adv_clip_max = float(self.cfg.algorithm.get("adv_clip_max", 1.0))
+        advantages = self._postprocess_advantages(advantages)
         # clip delta v and get pos/neg candidates
         delta_v, clip_coef, v_pos, v_neg = self._compute_clipped_delta_v(
             v_theta, v_old, sum_dims
@@ -387,7 +385,7 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         # loss
         delta_e = e_pos - e_neg
         loss = self._compute_nft_loss(
-            e_pos, e_neg, delta_e, advantages, loss_mask, adv_clip_max
+            e_pos, e_neg, delta_e, advantages, loss_mask
         )
         # metrics
         with torch.no_grad():
@@ -403,6 +401,22 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
                 "actor/delta_E_mean": delta_e.mean().item(),
             }
         return loss, metrics_data
+
+    def _postprocess_advantages(self, advantages: torch.Tensor) -> torch.Tensor:
+        """Map advantages into [0, 1] to match NFT loss semantics (r=0 -> neg, r=1 -> pos).
+
+        - adv_type == "raw": success rewards already in [0, 1], no-op.
+        - Otherwise (e.g. grpo): clip to [-adv_clip_max, +adv_clip_max] then
+          linearly rescale into [0, 1] via (adv + max) / (2 * max). After this
+          the subsequent clamp in _compute_nft_loss becomes a no-op.
+        """
+        adv_type = self.cfg.algorithm.get("adv_type", "raw")
+        if adv_type == "raw":
+            return advantages
+        adv_clip_max = float(self.cfg.algorithm.get("adv_clip_max", 1.0))
+        advantages = advantages.clamp(-adv_clip_max, adv_clip_max)
+        advantages = (advantages + adv_clip_max) / (2.0 * adv_clip_max)
+        return advantages
 
     def _compute_clipped_delta_v(
         self,
@@ -431,19 +445,19 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         delta_e: torch.Tensor,
         advantages: torch.Tensor,
         loss_mask: torch.Tensor,
-        adv_clip_max: float,
     ) -> torch.Tensor:
-        """Compute final NFT loss from pos/neg energies."""
+        """Compute final NFT loss from pos/neg energies.
+
+        Assumes advantages already lies in [0, 1] (enforced by _postprocess_advantages).
+        """
         loss_form = self.cfg.algorithm.get("nft_loss_form", "dpo")
         if loss_form == "dpo":
             dpo_beta = float(self.cfg.algorithm.get("dpo_beta", 1.0))
-            y = torch.clamp(advantages * 2.0 - 1.0, -adv_clip_max, adv_clip_max)
-            y = y / adv_clip_max
+            y = advantages * 2.0 - 1.0
             logit = (dpo_beta / 2.0) * y * delta_e
             return masked_mean(F.softplus(logit), loss_mask)
         elif loss_form == "mse":
-            advantages_clip = torch.clamp(advantages, 0.0, adv_clip_max)
-            r = torch.clamp((advantages_clip / adv_clip_max), 0.0, 1.0)
+            r = advantages
             return masked_mean(r * e_pos + (1.0 - r) * e_neg, loss_mask)
         else:
             raise ValueError(f"Unsupported nft_loss_form: {loss_form}")
