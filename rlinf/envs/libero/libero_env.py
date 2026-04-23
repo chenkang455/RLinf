@@ -90,6 +90,7 @@ class LiberoEnv(gym.Env):
         self.num_group = self.num_envs // self.group_size
         self.use_fixed_reset_state_ids = cfg.use_fixed_reset_state_ids
         self.specific_reset_id = cfg.get("specific_reset_id", None)
+        self.allowed_task_ids = cfg.get("task_ids", None)
 
         self.ignore_terminations = cfg.ignore_terminations
         self.auto_reset = cfg.auto_reset
@@ -346,6 +347,39 @@ class LiberoEnv(gym.Env):
             self.trial_id_bins.append(task_num_trials)
             self.total_num_group_envs += task_num_trials
         self.cumsum_trial_id_bins = np.cumsum(self.trial_id_bins)
+        self.candidate_reset_state_ids = self._build_candidate_reset_state_ids()
+
+    def _build_candidate_reset_state_ids(self):
+        if self.allowed_task_ids is None:
+            return np.arange(self.total_num_group_envs)
+
+        candidate_reset_state_ids = []
+        for task_id in self.allowed_task_ids:
+            if task_id < 0 or task_id >= self.task_suite.get_num_tasks():
+                raise ValueError(
+                    f"Task id {task_id} is out of range for suite "
+                    f"{self.cfg.task_suite_name}."
+                )
+            start_pivot = 0 if task_id == 0 else self.cumsum_trial_id_bins[task_id - 1]
+            end_pivot = self.cumsum_trial_id_bins[task_id]
+            candidate_reset_state_ids.extend(range(start_pivot, end_pivot))
+
+        if not candidate_reset_state_ids:
+            raise ValueError(
+                f"No reset states available for task_ids={self.allowed_task_ids} "
+                f"in suite {self.cfg.task_suite_name}."
+            )
+
+        if (
+            self.specific_reset_id is not None
+            and self.specific_reset_id not in candidate_reset_state_ids
+        ):
+            raise ValueError(
+                f"specific_reset_id={self.specific_reset_id} is not included in "
+                f"task_ids={self.allowed_task_ids}."
+            )
+
+        return np.array(candidate_reset_state_ids, dtype=int)
 
     def update_reset_state_ids(self):
         if self.cfg.is_eval or self.cfg.use_ordered_reset_state_ids:
@@ -365,13 +399,16 @@ class LiberoEnv(gym.Env):
                 (num_reset_states,), dtype=int
             )
         else:
-            reset_state_ids = self._generator.integers(
-                low=0, high=self.total_num_group_envs, size=(num_reset_states,)
+            selected_idx = self._generator.integers(
+                low=0,
+                high=len(self.candidate_reset_state_ids),
+                size=(num_reset_states,),
             )
+            reset_state_ids = self.candidate_reset_state_ids[selected_idx]
         return reset_state_ids
 
     def get_reset_state_ids_all(self):
-        reset_state_ids = np.arange(self.total_num_group_envs)
+        reset_state_ids = self.candidate_reset_state_ids.copy()
         valid_size = len(reset_state_ids) - (
             len(reset_state_ids) % self.total_num_processes
         )
