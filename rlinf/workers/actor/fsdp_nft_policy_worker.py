@@ -12,15 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import os
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 from omegaconf import ListConfig
-from torch.distributed.tensor import DTensor
 
-from rlinf.config import torch_dtype_from_precision
 from rlinf.models.embodiment.base_policy import ForwardType
 from rlinf.scheduler.worker.worker import Worker
 from rlinf.utils.distributed import all_reduce_dict
@@ -96,65 +95,64 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         return rollout_state_dict
 
     async def sync_model_to_rollout(self) -> None:
-        """
-        Sync the model's full state dict to the rollout worker using bucket-based sending.
-        This reduces peak memory usage by sending weights in smaller chunks instead of
-        all at once, preventing OOM on GPUs with limited memory.
-        """
+        """Sync rollout-target weights (EMA or on-policy) via the configured weight syncer."""
+        if not self._weight_dst_rank_in_rollout:
+            self.log_debug(
+                f"Actor rank {self._rank} has no rollout weight-sync destination."
+            )
+            if self.enable_offload:
+                if not self.is_optimizer_offloaded:
+                    self.offload_optimizer()
+                if not self.is_weight_offloaded:
+                    self.offload_param_and_grad(True)
+            return
+
         if self.enable_offload:
             if not self.is_optimizer_offloaded:
                 self.offload_optimizer()
-
             if self.is_weight_offloaded:
                 self.load_param_and_grad(self.device, False)
 
-        rollout_dtype = None
-        if self._cfg.get("sync_precision", None) is not None:
-            rollout_dtype = torch_dtype_from_precision(self._cfg.sync_precision)
+        state_dict = self.get_rollout_state_dict()
 
-        rollout_state_dict = self.get_rollout_state_dict()
-        model_bucket_list = self.divide_model_to_bucket(rollout_state_dict)
-        del rollout_state_dict
-
-        handles = []
-        # Send weights bucket by bucket to reduce peak memory usage
-        for rank in self._weight_dst_rank_in_rollout:
-            handles.append(
+        async def send_func(data):
+            handles = [
                 self.send(
-                    len(model_bucket_list),
-                    self._rollout_group_name,
-                    rank,
+                    data,
+                    dst_group_name=self._rollout_group_name,
+                    dst_rank=rank,
                     async_op=True,
                     options=self._sync_weight_comm_options,
-                )
+                ).async_wait()
+                for rank in self._weight_dst_rank_in_rollout
+            ]
+            await asyncio.gather(*handles)
+
+        async def recv_func():
+            handles = [
+                self.recv(
+                    src_group_name=self._rollout_group_name,
+                    src_rank=rank,
+                    async_op=True,
+                    options=self._sync_weight_comm_options,
+                ).async_wait()
+                for rank in self._weight_dst_rank_in_rollout
+            ]
+            metadata_list = await asyncio.gather(*handles)
+            metadata = metadata_list[0]
+            for other in metadata_list[1:]:
+                if other != metadata:
+                    raise ValueError("Patch metadata differs across rollout ranks")
+            return metadata
+
+        if not self.weight_syncer.sender_initialized():
+            await self.weight_syncer.init_sender(
+                state_dict=state_dict,
+                send=send_func,
+                recv=recv_func,
             )
-        for bucket in model_bucket_list:
-            # Add bucket_length to first bucket for receiver to know total count
-            buffer = {}
-            for k, v in bucket.items():
-                if isinstance(v, DTensor):
-                    v = v.full_tensor()
-                if rollout_dtype is not None:
-                    v = v.to(rollout_dtype)
-                buffer[k] = v
 
-            for handle in handles:
-                await handle.async_wait()
-            handles = []
-
-            for rank in self._weight_dst_rank_in_rollout:
-                handles.append(
-                    self.send(
-                        buffer,
-                        self._rollout_group_name,
-                        rank,
-                        async_op=True,
-                        options=self._sync_weight_comm_options,
-                    )
-                )
-        for handle in handles:
-            await handle.async_wait()
-        del buffer
+        await self.weight_syncer.sync(state_dict, send_func, version=self.version)
 
         if self.enable_offload:
             assert not self.is_weight_offloaded, (
