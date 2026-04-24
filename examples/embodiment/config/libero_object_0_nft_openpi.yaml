@@ -36,7 +36,7 @@ runner:
   ckpt_path: null  # Optional: path to a .pt checkpoint. If not None, it will be loaded after the model is instantiated (for evaluation).
 
 algorithm:
-  group_size: 1
+  group_size: 8
   reward_coef: 1.0
   rollout_epoch: 1
   eval_rollout_epoch: 1
@@ -44,25 +44,25 @@ algorithm:
   reward_type: chunk_level
   logprob_type: chunk_level
 
-  update_epoch: 2
-  adv_type: raw
+  update_epoch: 1          # v3: 2 -> 1, reduce overfitting on the same rollout batch
+  adv_type: grpo
   loss_type: embodied_nft
-  filter_rewards: False
-  rewards_lower_bound: 0.5
-  rewards_upper_bound: 1.5
+  filter_rewards: True
+  rewards_lower_bound: 0.1
+  rewards_upper_bound: 0.9
 
 
   # NFT-specific params
   nft_loss_form: mse     # dpo, mse
   nft_beta: 1.0         # velocity scaling coefficient
-  adv_clip_max: 1.0     # advantage clipping bound for DPO preference signal
+  adv_clip_max: 0.5     # advantage clipping bound for DPO preference signal
   dpo_beta: 1.0         # DPO loss temperature
-  max_drift: 0.5        # max velocity drift norm for clipping
+  max_drift: 0.3         # v3: 0.5 -> 0.3, tighter velocity trust region
   nft_weight_mode: "auto"  # energy weight mode: "constant", "t", "sigma", "adaptive", "auto" (auto = adaptive for ODE, sigma for SDE)
-  nft_weight_scale: [1.0, 0.0]   # weight scale 
+  nft_weight_scale: [1.0, 0.2]   # weight scale
   nft_target_space: "x0"  # xnext or x0
   nft_xcur_source: "resample"  # rollout or resample
-  nft_tau: 1.0          # rollout lag policy EMA; 1.0 means on-policy
+  nft_tau: 0.95          # v3: 1.0 -> 0.95, off-policy EMA to smooth rollout policy drift
   recompute_v: False
 
   # params required by rollout worker
@@ -85,11 +85,12 @@ env:
   # Override the default values in env/libero_object
   train:
     task_id_filter: [0]
-    total_num_envs: 32
+    total_num_envs: 64
+    group_size: ${algorithm.group_size}
     max_episode_steps: 240
     max_steps_per_rollout_epoch: 240
     video_cfg:
-      save_video: True
+      save_video: False
       video_base_dir: ${runner.logger.log_path}/video/train
   eval:
     task_id_filter: [0]
@@ -121,7 +122,7 @@ actor:
   group_name: "ActorGroup"
   training_backend: "fsdp"
   micro_batch_size: 32
-  global_batch_size: 256 # maximum : global batch size = micro batch size * actor num_processes.
+  global_batch_size: 512 # maximum : global batch size = micro batch size * actor num_processes.
   seed: 42
   enable_offload: False
 
@@ -136,7 +137,7 @@ actor:
       noise_method: "flow_ode"
 
   optim:
-    lr: 1.0e-6
+    lr: 5.0e-6
     value_lr: 1.0e-4
     adam_beta1: 0.9
     adam_beta2: 0.95
