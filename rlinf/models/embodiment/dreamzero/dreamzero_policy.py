@@ -22,6 +22,7 @@ from groot.vla.data.transform import ComposedModalityTransform
 from groot.vla.model.dreamzero.base_vla import VLA, VLAConfig
 from tianshou.data import Batch
 from transformers.configuration_utils import PretrainedConfig
+from transformers.feature_extraction_utils import BatchFeature
 
 from rlinf.models.embodiment.base_policy import BasePolicy, ForwardType
 
@@ -259,7 +260,6 @@ class DreamZeroPolicy(VLA, BasePolicy):
         output:
             actions: np.ndarray [B, num_action_chunks, 8]  # 6ee + 1 gripper
             result: dict  # compatible with rollout interface"""
-
         converted_obs = self._observation_convert(env_obs)
         batch = Batch(obs=converted_obs)
         # ---------- DreamZero inference ----------
@@ -292,6 +292,18 @@ class DreamZeroPolicy(VLA, BasePolicy):
             .cpu()
         )
         forward_inputs = {"action": flat}
+        # store all the normalized_input tensors to forward_inputs
+        for k, v in normalized_input.items():
+            if torch.is_tensor(v):
+                forward_inputs[k] = v.detach().cpu().contiguous()
+        # take the normalized_action as nft_x0
+        nft_x0 = (
+            normalized_action.detach().cpu().contiguous()
+        )  # [B, horizon, action_dim]
+        forward_inputs["nft_x0"] = nft_x0
+        forward_inputs["nft_noise_level"] = torch.zeros(
+            nft_x0.shape[0], dtype=torch.float32
+        )
         result = {
             "prev_logprobs": torch.zeros_like(flat, dtype=torch.float32),
             "prev_values": torch.zeros((flat.shape[0], 1), dtype=torch.float32),
@@ -304,8 +316,68 @@ class DreamZeroPolicy(VLA, BasePolicy):
             return self.default_forward(**kwargs)
         elif forward_type == ForwardType.SFT:
             return self.sft_forward(**kwargs)
+        elif forward_type == ForwardType.NFT:
+            return self.nft_forward(**kwargs)
         else:
             raise NotImplementedError
+
+    def nft_forward(
+        self,
+        forward_inputs: dict[str, torch.Tensor],
+        nft_inputs: dict[str, torch.Tensor],
+        **kwargs,
+    ) -> dict[str, Any]:
+        """Single-step action-branch velocity prediction used by NFT loss.
+
+        Reuses the obs cached at rollout time to rebuild an `inference`-style
+        policy_inputs, then calls `action_head.model(...)` once with the
+        NFT-provided noisy action `x_t` and timestep. The video branch is
+        fed the clean image latent at timestep=0 so its output is ignored.
+        """
+        action_head = self.action_head
+        device = next(self.parameters()).device
+
+        # Rebuild obs BatchFeature from cached tensors. `forward_inputs` stores
+        # obs tensors with their original keys alongside NFT/action entries;
+        # filter those out so only obs reaches `prepare_policy_inputs`.
+        skip_keys = {"action", "nft_x0", "nft_noise_level"}
+        nft_obs = {
+            k: v.to(device)
+            for k, v in forward_inputs.items()
+            if torch.is_tensor(v) and k not in skip_keys
+        }
+        obs = BatchFeature(data=nft_obs)
+
+        policy_inputs = action_head.prepare_policy_inputs(data=obs, mode="inference")
+
+        x_t = nft_inputs["x_t"].to(device)
+        t = nft_inputs["timesteps"].to(device)
+
+        # Video branch: treat cached image_latents as clean video at timestep=0.
+        image_latents = policy_inputs["image_latents"]  # [B, C, 1, Hl, Wl]
+        noisy_latents = image_latents.transpose(1, 2)  # [B, 1, C, Hl, Wl]
+        B, _, _, Hl, Wl = image_latents.shape
+        video_timestep = torch.zeros((B, 1), device=device, dtype=torch.int64)
+        frame_seqlen = (Hl // 2) * (Wl // 2)
+        seq_len = noisy_latents.shape[1] * frame_seqlen
+
+        with torch.amp.autocast(dtype=torch.bfloat16, device_type=device.type):
+            _, action_noise_pred = action_head.model(
+                noisy_latents,
+                timestep=video_timestep,
+                clip_feature=policy_inputs["clip_feas"].to(device),
+                y=policy_inputs["ys"].to(device),
+                context=policy_inputs["prompt_embs"].to(device),
+                seq_len=seq_len,
+                state=policy_inputs["state_features"],
+                embodiment_id=policy_inputs["embodiment_id"],
+                action=x_t,
+                timestep_action=t,
+            )
+
+        return {
+            "v_theta": action_noise_pred,
+        }
 
     def sft_forward(self, data=None, **kwargs):
         if data is None:

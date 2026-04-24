@@ -16,16 +16,8 @@ import json
 from pathlib import Path
 
 import torch.nn as nn
-from groot.vla.data.schema import DatasetMetadata
-from groot.vla.data.transform import ComposedModalityTransform
-from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
-from safetensors.torch import load_file
-
-from rlinf.models.embodiment.dreamzero.dreamzero_policy import (
-    DreamZeroConfig,
-    DreamZeroPolicy,
-)
+from safetensors import safe_open
 
 
 def _promote_scalar_params_to_1d(model):
@@ -49,6 +41,59 @@ def _promote_scalar_params_to_1d(model):
 
 def get_model(cfg: DictConfig, torch_dtype=None):
     """Load DreamZero policy from checkpoint."""
+    # Fast-iteration path: keep DreamZeroPolicy in the call stack, but replace
+    # the heavyweight backbone/action head with tiny fake components.
+    if cfg.get("use_fake_model", False):
+        from rlinf.models.embodiment.dreamzero.fake_dreamzero_policy import (
+            FakeDreamZeroDataTransforms,
+        )
+        from rlinf.models.embodiment.dreamzero.dreamzero_policy import (
+            DreamZeroConfig,
+            DreamZeroPolicy,
+        )
+
+        action_dim = cfg.get("action_dim", 7)
+        num_action_chunks = cfg.get("num_action_chunks", 16)
+        hidden = cfg.get("fake_hidden_size", 64)
+        dreamzero_config = DreamZeroConfig(
+            backbone_cfg={
+                "_target_": "rlinf.models.embodiment.dreamzero.fake_dreamzero_policy.FakeDreamZeroBackbone",
+                "hidden": hidden,
+            },
+            action_head_cfg={
+                "_target_": "rlinf.models.embodiment.dreamzero.fake_dreamzero_policy.FakeDreamZeroActionHead",
+                "action_dim": action_dim,
+                "action_horizon": num_action_chunks,
+                "hidden": hidden,
+                "dtype": str(torch_dtype).replace("torch.", "")
+                if torch_dtype is not None
+                else "float32",
+            },
+            action_horizon=num_action_chunks,
+            action_dim=action_dim,
+            env_action_dim=action_dim,
+            num_action_chunks=num_action_chunks,
+            num_steps=cfg.get("fake_num_steps", 4),
+            data_transforms=FakeDreamZeroDataTransforms(),
+            relative_action=False,
+            relative_action_per_horizon=False,
+            relative_action_keys=[],
+        )
+
+        model = DreamZeroPolicy(config=dreamzero_config)
+        _promote_scalar_params_to_1d(model)
+        model = model.to(dtype=torch_dtype)
+        model.action_head.trt_engine = None
+        return model
+
+    from groot.vla.data.schema import DatasetMetadata
+    from groot.vla.data.transform import ComposedModalityTransform
+    from hydra.utils import instantiate
+
+    from rlinf.models.embodiment.dreamzero.dreamzero_policy import (
+        DreamZeroConfig,
+        DreamZeroPolicy,
+    )
 
     model_path = Path(cfg.get("model_path"))
     if not model_path.exists():
@@ -64,13 +109,13 @@ def get_model(cfg: DictConfig, torch_dtype=None):
     with open(config_path) as f:
         config_dict = json.load(f)
 
+    # Build clean DiT, load base weights, then inject LoRA with upstream defaults.
     dreamzero_config = DreamZeroConfig(**config_dict)
-    # Disable defer_lora_injection for immediate loading
-    if "config" in dreamzero_config.action_head_cfg and isinstance(
-        dreamzero_config.action_head_cfg["config"], dict
-    ):
-        dreamzero_config.action_head_cfg["config"]["defer_lora_injection"] = False
+    use_lora = cfg.get("use_lora", False)
+    if use_lora:
         dreamzero_config.action_head_cfg["config"]["skip_component_loading"] = True
+        dreamzero_config.action_head_cfg["config"]["train_architecture"] = "lora"
+        dreamzero_config.action_head_cfg["config"]["defer_lora_injection"] = True
 
     dreamzero_config.env_action_dim = action_dim
 
@@ -95,28 +140,41 @@ def get_model(cfg: DictConfig, torch_dtype=None):
         "relative_action_per_horizon", False
     )
     dreamzero_config.relative_action_keys = train_cfg.get("relative_action_keys", [])
-
     model = DreamZeroPolicy(
         config=dreamzero_config,
     )
-    #  load safetensors (support index shard)
-    state_dict = {}
+    # Stream safetensors and skip frozen encoders already loaded in
+    # WANPolicyHead.__init__ (text_encoder / image_encoder / vae). Their
+    # checkpoint copies are bit-exact bf16 casts of the fp32 pretrained
+    # .pth files, so reloading them is redundant I/O (~15 GB).
+    skip_prefixes = (
+        "action_head.text_encoder.",
+        "action_head.image_encoder.",
+        "action_head.vae.",
+    )
     st = model_path / "model.safetensors"
     st_index = model_path / "model.safetensors.index.json"
     if st_index.exists():
         with open(st_index, "r") as f:
-            index = json.load(f)
-        for shard_file in sorted(set(index["weight_map"].values())):
-            state_dict.update(load_file(str(model_path / shard_file)))
+            shard_files = sorted(set(json.load(f)["weight_map"].values()))
     elif st.exists():
-        state_dict.update(load_file(str(st)))
+        shard_files = ["model.safetensors"]
     else:
         raise FileNotFoundError(f"No safetensors weights under {model_path}")
-    if any(".base_layer." in k for k in state_dict):
-        state_dict = {k.replace(".base_layer.", "."): v for k, v in state_dict.items()}
+
+    state_dict = {}
+    for shard_file in shard_files:
+        with safe_open(str(model_path / shard_file), framework="pt") as f:
+            for k in f.keys():
+                if k.startswith(skip_prefixes):
+                    continue
+                state_dict[k] = f.get_tensor(k)
     model.load_state_dict(state_dict, strict=False)
+
+    if use_lora:
+        model.action_head.inject_lora_after_loading()
 
     _promote_scalar_params_to_1d(model)
     model = model.to(dtype=torch_dtype)
-
+    model.action_head.trt_engine = None
     return model
