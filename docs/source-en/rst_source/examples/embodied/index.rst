@@ -299,18 +299,6 @@ as well as reinforcement learning training examples on real robots.
      </div>
 
      <div style="flex: 1 1 30%; max-width: 300px; text-align: center;">
-       <!-- TODO(thumbnail): replace placeholder cover image URL for nft_openpi -->
-       <img src="https://github.com/RLinf/misc/raw/main/pic/pi0_icon.jpg"
-            style="width: 100%; height: 200px; object-fit: cover; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.15);" />
-       <p style="margin-top: 8px; font-size: 14px; line-height: 1.4;">
-         <a href="nft_openpi.html" style="text-decoration: underline; color: blue;">
-           <b>NFT on π₀: Negative-aware FineTuning</b>
-         </a><br>
-         Critic-free online RL fine-tuning for pre-trained π₀ flow-matching policies
-       </p>
-     </div>
-
-     <div style="flex: 1 1 30%; max-width: 300px; text-align: center;">
        <img src="https://github.com/RLinf/misc/raw/main/pic/dsrl.png"
             style="width: 100%; height: 200px; object-fit: cover; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.15);" />
        <p style="margin-top: 8px; font-size: 14px; line-height: 1.4;">
@@ -409,6 +397,17 @@ as well as reinforcement learning training examples on real robots.
        </p>
      </div>
 
+    <div style="flex: 1 1 30%; max-width: 300px; text-align: center;">
+      <img src="https://github.com/RLinf/misc/raw/main/pic/pi0_icon.jpg"
+           style="width: 100%; height: 200px; object-fit: cover; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.15);" />
+      <p style="margin-top: 8px; font-size: 14px; line-height: 1.4;">
+        <a href="franka_pi0_sft_deploy.html" style="text-decoration: underline; color: blue;">
+          <b>Franka Pi0 SFT and Deployment</b>
+        </a><br>
+        Data collection + Pi0 SFT + real-world deployment demo
+      </p>
+    </div>
+
      <div style="flex: 1 1 30%; max-width: 300px; text-align: center;">
        <img src="https://github.com/RLinf/misc/raw/main/pic/xsquare_turtle2_arm_small.jpg"
             style="width: 100%; height: 200px; object-fit: cover; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.15);" />
@@ -462,7 +461,6 @@ as well as reinforcement learning training examples on real robots.
    sac_flow
    sft_openpi
    sft_vlm
-   nft_openpi
    dsrl
    dagger
    recap
@@ -472,5 +470,6 @@ as well as reinforcement learning training examples on real robots.
    franka_zed_robotiq
    franka_gello
    hg-dagger
+   franka_pi0_sft_deploy
    xsquare_turtle2
    dosw1
