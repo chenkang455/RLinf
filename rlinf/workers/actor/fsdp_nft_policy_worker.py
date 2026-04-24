@@ -75,8 +75,10 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
                 return start_tau
             if step >= end_step:
                 return end_tau
-            ratio = 0.0 if start_step == end_step else (
-                (step - start_step) / float(end_step - start_step)
+            ratio = (
+                0.0
+                if start_step == end_step
+                else ((step - start_step) / float(end_step - start_step))
             )
             return start_tau + ratio * (end_tau - start_tau)
         return float(tau)
@@ -158,8 +160,6 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
                 "weight should be offloaded in sync_model_to_rollout"
             )
             self.offload_param_and_grad(True)
-
-
 
     def soft_update_rollout_model(self) -> None:
         """Soft update rollout model: state = (1-tau)*state + tau*current. No-op when tau=1."""
@@ -456,9 +456,7 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         e_neg = ((pred_neg - target) ** 2 * w_neg).sum(dim=sum_dims)
         # loss
         delta_e = e_pos - e_neg
-        loss = self._compute_nft_loss(
-            e_pos, e_neg, delta_e, advantages, loss_mask
-        )
+        loss = self._compute_nft_loss(e_pos, e_neg, delta_e, advantages, loss_mask)
         # metrics
         with torch.no_grad():
             metrics_data = {
@@ -468,8 +466,12 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
                 "actor/clip_frac": (clip_coef < 1).float().mean().item(),
                 "actor/E_pos_mean": e_pos.mean().item(),
                 "actor/E_neg_mean": e_neg.mean().item(),
-                "actor/E_pos_mean_pos_only": masked_mean(e_pos, (advantages > 0.5) & loss_mask.bool()).item(),
-                "actor/E_neg_mean_neg_only": masked_mean(e_neg, (advantages < 0.5) & loss_mask.bool()).item(),
+                "actor/E_pos_mean_pos_only": masked_mean(
+                    e_pos, (advantages > 0.5) & loss_mask.bool()
+                ).item(),
+                "actor/E_neg_mean_neg_only": masked_mean(
+                    e_neg, (advantages < 0.5) & loss_mask.bool()
+                ).item(),
                 "actor/delta_E_mean": delta_e.mean().item(),
             }
         return loss, metrics_data
@@ -657,7 +659,7 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         elif weight_mode == "t":
             weight *= t_bc**2
         elif weight_mode == "1-t":
-            weight *= (1 - t_bc)**2
+            weight *= (1 - t_bc) ** 2
         elif weight_mode == "inv_t2":
             weight /= t_bc**2 + 1e-4
         elif weight_mode == "inv_t3":

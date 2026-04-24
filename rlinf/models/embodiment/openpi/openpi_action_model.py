@@ -574,7 +574,7 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         }
         if forward_action is not None:
             forward_inputs["action"] = forward_action
-        
+
         if self.config.is_nft:
             nft_outputs = {
                 key: value for key, value in outputs.items() if key.startswith("nft_")
@@ -658,9 +658,7 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         denoise_inds = denoise_inds[None].repeat(bsize, 1)
 
         # collect nft states for nft algorithm
-        nft_state = self._init_nft_state(
-            collect_nft_state, x_t, num_steps, device
-        )
+        nft_state = self._init_nft_state(collect_nft_state, x_t, num_steps, device)
 
         # denoise step
         for idx in range(num_steps):
@@ -682,9 +680,7 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
             )
             # Euler step - use new tensor assignment instead of in-place operation
             x_t = x_t_mean + self.sample_noise(x_t.shape, device) * x_t_std
-            self._update_nft_state(
-                nft_state, idx, x_t_prev, v_t, x_t, sample_method
-            )
+            self._update_nft_state(nft_state, idx, x_t_prev, v_t, x_t, sample_method)
             log_prob = self.get_logprob_norm(x_t, x_t_mean, x_t_std)
             # store
             values.append(value_t)
@@ -1207,7 +1203,7 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         return q_values
 
     # ===== NFT-specific methods =====
-    
+
     def _init_nft_state(
         self,
         collect_nft_state: bool,
@@ -1261,7 +1257,7 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
             torch.full_like(nft_state["nft_noise_level"], float(noise_level.item())),
             nft_state["nft_noise_level"],
         )
-        
+
     def _get_noise_level(
         self, device: torch.device, dtype: torch.dtype, sample_method: str | None = None
     ) -> torch.Tensor:
