@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import asyncio
 import os
 
 import numpy as np
@@ -84,81 +83,10 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         return float(tau)
 
     def get_rollout_state_dict(self) -> dict:
-        """Get the rollout model state dict."""
-        tau = self._get_current_nft_tau()
-        if tau >= 1.0:
-            rollout_state_dict = self.get_model_state_dict(
-                cpu_offload=False, full_state_dict=False
-            )
-        else:
-            rollout_state_dict = self.rollout_model_state_dict
-        return rollout_state_dict
-
-    async def sync_model_to_rollout(self) -> None:
-        """Sync rollout-target weights (EMA or on-policy) via the configured weight syncer."""
-        if not self._weight_dst_rank_in_rollout:
-            self.log_debug(
-                f"Actor rank {self._rank} has no rollout weight-sync destination."
-            )
-            if self.enable_offload:
-                if not self.is_optimizer_offloaded:
-                    self.offload_optimizer()
-                if not self.is_weight_offloaded:
-                    self.offload_param_and_grad(True)
-            return
-
-        if self.enable_offload:
-            if not self.is_optimizer_offloaded:
-                self.offload_optimizer()
-            if self.is_weight_offloaded:
-                self.load_param_and_grad(self.device, False)
-
-        state_dict = self.get_rollout_state_dict()
-
-        async def send_func(data):
-            handles = [
-                self.send(
-                    data,
-                    dst_group_name=self._rollout_group_name,
-                    dst_rank=rank,
-                    async_op=True,
-                    options=self._sync_weight_comm_options,
-                ).async_wait()
-                for rank in self._weight_dst_rank_in_rollout
-            ]
-            await asyncio.gather(*handles)
-
-        async def recv_func():
-            handles = [
-                self.recv(
-                    src_group_name=self._rollout_group_name,
-                    src_rank=rank,
-                    async_op=True,
-                    options=self._sync_weight_comm_options,
-                ).async_wait()
-                for rank in self._weight_dst_rank_in_rollout
-            ]
-            metadata_list = await asyncio.gather(*handles)
-            metadata = metadata_list[0]
-            for other in metadata_list[1:]:
-                if other != metadata:
-                    raise ValueError("Patch metadata differs across rollout ranks")
-            return metadata
-
-        if not self.weight_syncer.sender_initialized():
-            await self.weight_syncer.init_sender(
-                state_dict=state_dict,
-                send=send_func,
-                recv=recv_func,
-            )
-
-        await self.weight_syncer.sync(state_dict, send_func, version=self.version)
-
-        if self.enable_offload:
-            assert not self.is_weight_offloaded, (
-                "weight should be offloaded in sync_model_to_rollout"
-            )
-            self.offload_param_and_grad(True)
+        """Return EMA cache when tau<1, otherwise defer to the on-policy parent behavior."""
+        if self._get_current_nft_tau() < 1.0:
+            return self.rollout_model_state_dict
+        return super().get_rollout_state_dict()
 
     def soft_update_rollout_model(self) -> None:
         """Soft update rollout model: state = (1-tau)*state + tau*current. No-op when tau=1."""
