@@ -1,5 +1,6 @@
-# libero_spatial_eval_dreamzero_5b_lora.yaml
-# DreamZero 5B LoRA eval on Libero Spatial (embodied)
+# libero_spatial_eval_dreamzero_5b.yaml
+# DreamZero 5B (Wan2.2 TI2V) eval on Libero Spatial (embodied)
+# DROID action space: 8D (7 joint + gripper), model outputs action chunks
 
 defaults:
   - env/libero_spatial@env.train
@@ -25,7 +26,7 @@ runner:
   logger:
     log_path: "../results"
     project_name: rlinf
-    experiment_name: "libero_spatial_eval_dreamzero_5b_lora"
+    experiment_name: "libero_spatial_eval_dreamzero_5b"
     logger_backends: ["tensorboard"]
 
   max_epochs: 1
@@ -115,7 +116,7 @@ actor:
 
   model:
     model_type: "dreamzero"
-    model_path: /mnt/project_rlinf/chenkang/RLinf_codes/RLinf_dreamzero/third_party/dreamzero_5b_huining/checkpoints/dreamzero_libero_wan22_full_finetune_1chunk/checkpoint-8000
+    model_path: /mnt/project_rlinf/chenkang/RLinf_codes/RLinf_dreamzero/third_party/dreamzero_5b_huining/checkpoints/dreamzero_libero_wan22_full_finetune_1chunk/checkpoint-12000
 
     action_dim: 7
     num_action_chunks: 16
