@@ -9,6 +9,9 @@ from groot.vla.model.dreamzero.action_head.wan_flow_matching_action_tf import (
 from groot.vla.model.dreamzero.modules.flow_unipc_multistep_scheduler import (
     FlowUniPCMultistepScheduler,
 )
+from diffusers.schedulers.scheduling_flow_match_euler_discrete import (
+    FlowMatchEulerDiscreteScheduler,
+)
 
 
 class DreamZeroActionHead(WANPolicyHead):
@@ -20,6 +23,7 @@ class DreamZeroActionHead(WANPolicyHead):
     def forward(self, backbone_output: BatchFeature, action_input: BatchFeature) -> BatchFeature:
         """Run the local DreamZero training forward path."""
         self.set_frozen_modules_to_eval_mode()
+        breakpoint()
         policy_inputs = self.prepare_policy_inputs(data=action_input, mode="training")
         training_targets = self.build_training_noise_targets(policy_inputs)
         loss_dict = self.compute_training_losses(policy_inputs, training_targets)
@@ -327,19 +331,30 @@ class DreamZeroActionHead(WANPolicyHead):
         batch_size = noisy_input.shape[0]
         seq_len = (noisy_input.shape[-2] // 2) * (noisy_input.shape[-1] // 2) * noisy_input.shape[1]
         device = noisy_input.device
-        # sample scheduler
-        sample_scheduler = FlowUniPCMultistepScheduler(
-            num_train_timesteps=self.scheduler.num_train_timesteps,
-            shift=1,
-            use_dynamic_shifting=False,
-        )
-        sample_scheduler_action = FlowUniPCMultistepScheduler(
-            num_train_timesteps=self.scheduler.num_train_timesteps,
-            shift=1,
-            use_dynamic_shifting=False,
-        )
-        sample_scheduler.set_timesteps(self.num_inference_steps, device=device, shift=self.sigma_shift)
-        sample_scheduler_action.set_timesteps(self.num_inference_steps, device=device, shift=self.sigma_shift)
+        # eval_action_sampler: "unipc" | "euler"
+        use_euler = getattr(self, "eval_action_sampler", "unipc") == "euler"
+        if use_euler:
+            sample_scheduler = FlowMatchEulerDiscreteScheduler(
+                num_train_timesteps=self.scheduler.num_train_timesteps, shift=1.0,
+            )
+            sample_scheduler_action = FlowMatchEulerDiscreteScheduler(
+                num_train_timesteps=self.scheduler.num_train_timesteps, shift=1.0,
+            )
+            sample_scheduler.set_timesteps(self.num_inference_steps, device=device)
+            sample_scheduler_action.set_timesteps(self.num_inference_steps, device=device)
+        else:
+            sample_scheduler = FlowUniPCMultistepScheduler(
+                num_train_timesteps=self.scheduler.num_train_timesteps,
+                shift=1,
+                use_dynamic_shifting=False,
+            )
+            sample_scheduler_action = FlowUniPCMultistepScheduler(
+                num_train_timesteps=self.scheduler.num_train_timesteps,
+                shift=1,
+                use_dynamic_shifting=False,
+            )
+            sample_scheduler.set_timesteps(self.num_inference_steps, device=device, shift=self.sigma_shift)
+            sample_scheduler_action.set_timesteps(self.num_inference_steps, device=device, shift=self.sigma_shift)
 
         prev_predictions = []
         self.skip_countdown = 0
@@ -358,6 +373,27 @@ class DreamZeroActionHead(WANPolicyHead):
                     start_frame = frame_len - self.num_frame_per_block
                     end_frame = frame_len
                 y = policy_inputs["ys"][:, :, start_frame : end_frame]
+                # eval_video_mode: "normal" | "clean" | "clean_noised" | "zero" | "random"
+                video_mode = getattr(self, "eval_video_mode", "normal")
+                if video_mode in ("clean", "clean_noised"):
+                    clean = (
+                        sampling_state["image_latents"]
+                        .expand(-1, self.num_frame_per_block, -1, -1, -1)
+                        .contiguous()
+                        .to(noisy_input.dtype)
+                    )
+                    if video_mode == "clean":
+                        noisy_input = clean
+                    else:
+                        # x_t = (1 - sigma) * x_0 + sigma * eps, matched to current timestep.
+                        sigma = sample_scheduler.sigmas[index].to(
+                            device=clean.device, dtype=clean.dtype
+                        )
+                        noisy_input = (1.0 - sigma) * clean + sigma * torch.randn_like(clean)
+                elif video_mode == "zero":
+                    noisy_input = torch.zeros_like(noisy_input)
+                elif video_mode == "random":
+                    noisy_input = torch.randn_like(noisy_input)
                 predictions = self._run_diffusion_steps(
                     # Scheduler state is frame-major, so switch back before DiT.
                     noisy_input=noisy_input.transpose(1, 2),
@@ -391,15 +427,15 @@ class DreamZeroActionHead(WANPolicyHead):
                 model_output=flow_pred.transpose(1, 2),
                 timestep=video_timestep,
                 sample=noisy_input,
-                step_index=index,
                 return_dict=False,
+                **({} if use_euler else {"step_index": index}),
             )[0]
             noisy_input_action = sample_scheduler_action.step(
                 model_output=flow_pred_cond_action,
                 timestep=action_timestep,
                 sample=noisy_input_action,
-                step_index=index,
                 return_dict=False,
+                **({} if use_euler else {"step_index": index}),
             )[0]
 
         # output

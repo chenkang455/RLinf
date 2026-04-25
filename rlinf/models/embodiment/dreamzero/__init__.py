@@ -115,11 +115,13 @@ def get_model(cfg: DictConfig, torch_dtype=None):
         "rlinf.models.embodiment.dreamzero.dreamzero_action_head.DreamZeroActionHead"
     ) 
     action_head_cfg = dreamzero_config.action_head_cfg.get("config", {})
-    # to build the num_steps for the nft worker
-    dreamzero_config.num_steps = cfg.get(
-        "num_steps",
-        action_head_cfg.get("num_inference_steps", 4),
-    )
+    # num_inference_steps
+    num_inference_steps = cfg.get("num_inference_steps", None)
+    if num_inference_steps is not None:
+        action_head_cfg["num_inference_steps"] = num_inference_steps
+        dreamzero_config.num_steps = num_inference_steps
+    else:
+        dreamzero_config.num_steps = action_head_cfg.get("num_inference_steps")
     use_lora = cfg.get("use_lora", False)
     if use_lora:
         action_head_cfg["skip_component_loading"] = True
@@ -186,4 +188,12 @@ def get_model(cfg: DictConfig, torch_dtype=None):
     _promote_scalar_params_to_1d(model)
     model = model.to(dtype=torch_dtype)
     model.action_head.trt_engine = None
+    if num_inference_steps is not None:
+        model.action_head.num_inference_steps = num_inference_steps
+    model.action_head.eval_video_mode = str(
+        cfg.get("eval_video_mode", "normal")
+    )
+    model.action_head.eval_action_sampler = str(
+        cfg.get("eval_action_sampler", "unipc")
+    )
     return model
