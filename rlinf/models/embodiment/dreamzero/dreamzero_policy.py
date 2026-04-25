@@ -352,22 +352,29 @@ class DreamZeroPolicy(VLA, BasePolicy):
 
         x_t = nft_inputs["x_t"].to(device)
         t = nft_inputs["timesteps"].to(device)
-
+        if t.ndim == 1:
+            t = t[:, None].expand(-1, x_t.shape[1])
+            
         # Video branch: treat cached image_latents as clean video at timestep=0.
         image_latents = policy_inputs["image_latents"]  # [B, C, 1, Hl, Wl]
-        noisy_latents = image_latents.transpose(1, 2)  # [B, 1, C, Hl, Wl]
-        B, _, _, Hl, Wl = image_latents.shape
-        video_timestep = torch.zeros((B, 1), device=device, dtype=torch.int64)
+        video_frames = 1 + action_head.model.num_frame_per_block
+        noisy_latents = image_latents.expand(-1, -1, video_frames, -1, -1)
+        B, _, _, Hl, Wl = noisy_latents.shape
+        video_timestep = torch.zeros((B, video_frames), device=device, dtype=torch.int64)
         frame_seqlen = (Hl // 2) * (Wl // 2)
-        seq_len = noisy_latents.shape[1] * frame_seqlen
+        seq_len = noisy_latents.shape[2] * frame_seqlen
+        y = policy_inputs["ys"][:, :, :video_frames].to(device)
+        prompt_embs = policy_inputs["prompt_embs"]
+        if isinstance(prompt_embs, list):
+            prompt_embs = prompt_embs[0]
 
         with torch.amp.autocast(dtype=torch.bfloat16, device_type=device.type):
             _, action_noise_pred = action_head.model(
                 noisy_latents,
                 timestep=video_timestep,
                 clip_feature=policy_inputs["clip_feas"].to(device),
-                y=policy_inputs["ys"].to(device),
-                context=policy_inputs["prompt_embs"].to(device),
+                y=y,
+                context=prompt_embs.to(device),
                 seq_len=seq_len,
                 state=policy_inputs["state_features"],
                 embodiment_id=policy_inputs["embodiment_id"],

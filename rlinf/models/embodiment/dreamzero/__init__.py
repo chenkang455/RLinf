@@ -111,11 +111,20 @@ def get_model(cfg: DictConfig, torch_dtype=None):
 
     # Build clean DiT, load base weights, then inject LoRA with upstream defaults.
     dreamzero_config = DreamZeroConfig(**config_dict)
+    dreamzero_config.action_head_cfg["_target_"] = (
+        "rlinf.models.embodiment.dreamzero.dreamzero_action_head.DreamZeroActionHead"
+    ) 
+    action_head_cfg = dreamzero_config.action_head_cfg.get("config", {})
+    # to build the num_steps for the nft worker
+    dreamzero_config.num_steps = cfg.get(
+        "num_steps",
+        action_head_cfg.get("num_inference_steps", 4),
+    )
     use_lora = cfg.get("use_lora", False)
     if use_lora:
-        dreamzero_config.action_head_cfg["config"]["skip_component_loading"] = True
-        dreamzero_config.action_head_cfg["config"]["train_architecture"] = "lora"
-        dreamzero_config.action_head_cfg["config"]["defer_lora_injection"] = True
+        action_head_cfg["skip_component_loading"] = True
+        action_head_cfg["train_architecture"] = "lora"
+        action_head_cfg["defer_lora_injection"] = True
 
     dreamzero_config.env_action_dim = action_dim
 
