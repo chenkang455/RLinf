@@ -189,6 +189,7 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
     @Worker.timer("run_training")
     def run_training(self) -> None:
         """Run NFT training with off-policy decay support."""
+        breakpoint()
         if self.is_weight_offloaded:
             self.load_param_and_grad(self.device)
         if self.is_optimizer_offloaded:
@@ -296,6 +297,8 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
     def _precompute_nft_training_inputs(self) -> None:
         """Prepare NFT training tensors before the update loop."""
         forward_inputs = self.rollout_batch["forward_inputs"]
+        if "chunk_obs" in self.rollout_batch:
+            forward_inputs["chunk_obs"] = self.rollout_batch["chunk_obs"]
         xcur_source = self.cfg.algorithm.get("nft_xcur_source", "rollout")
         num_steps = self.model.config.num_steps
         recompute_v = bool(self.cfg.algorithm.get("recompute_v", False))
@@ -383,6 +386,9 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         """NFT-specific forward and loss computation."""
         # prepare inputs
         forward_inputs = batch["forward_inputs"]
+        if "chunk_obs" in batch:
+            forward_inputs = dict(forward_inputs)
+            forward_inputs["chunk_obs"] = batch["chunk_obs"]
         target_space = self.cfg.algorithm.get("nft_target_space", "xnext")
         x_t_input = forward_inputs["nft_xcur"]
         step_indices = forward_inputs["nft_step_index"]

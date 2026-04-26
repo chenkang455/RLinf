@@ -39,6 +39,15 @@ def _promote_scalar_params_to_1d(model):
         setattr(module, param_name, new_p)
 
 
+def _to_plain_dict(value):
+    """Convert OmegaConf overrides to a plain dict while accepting plain dicts."""
+    if value is None:
+        return {}
+    if OmegaConf.is_config(value):
+        return OmegaConf.to_container(value, resolve=True)
+    return dict(value)
+
+
 def get_model(cfg: DictConfig, torch_dtype=None):
     """Load DreamZero policy from checkpoint."""
     # Fast-iteration path: keep DreamZeroPolicy in the call stack, but replace
@@ -117,14 +126,10 @@ def get_model(cfg: DictConfig, torch_dtype=None):
     action_head_cfg = dreamzero_config.action_head_cfg.get("config", {})
     # action_head_cfg_pre: merged into action_head_cfg before model construction
     # (consumed by WANPolicyHead.__init__ / its config dataclass).
-    pre_overrides = OmegaConf.to_container(
-        cfg.get("action_head_cfg_pre", {}) or {}, resolve=True
-    )
+    pre_overrides = _to_plain_dict(cfg.get("action_head_cfg_pre", {}))
     for k, v in pre_overrides.items():
         action_head_cfg[k] = v
-    post_overrides = OmegaConf.to_container(
-        cfg.get("action_head_cfg_post", {}) or {}, resolve=True
-    )
+    post_overrides = _to_plain_dict(cfg.get("action_head_cfg_post", {}))
     # nft_worker reads dreamzero_config.num_steps; mirror from post override
     # (preferred, since num_inference_steps lives in post) or fall back to config.
     dreamzero_config.num_steps = post_overrides.get(
@@ -198,9 +203,7 @@ def get_model(cfg: DictConfig, torch_dtype=None):
     model.action_head.trt_engine = None
     # action_head_cfg_post: setattr on model.action_head after construction
     # (runtime knobs not stored in config, e.g. eval_video_mode).
-    post_overrides = OmegaConf.to_container(
-        cfg.get("action_head_cfg_post", {}) or {}, resolve=True
-    )
+    post_overrides = _to_plain_dict(cfg.get("action_head_cfg_post", {}))
     for k, v in post_overrides.items():
         setattr(model.action_head, k, v)
     return model

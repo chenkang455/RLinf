@@ -50,6 +50,7 @@ class EnvOutput:
 
     obs: dict[str, Any]
     final_obs: Optional[dict[str, Any]] = None
+    chunk_obs: Optional[list[dict[str, Any]]] = None
     dones: Optional[torch.Tensor] = None  # [B]
     terminations: Optional[torch.Tensor] = None  # [B]
     truncations: Optional[torch.Tensor] = None  # [B]
@@ -63,6 +64,11 @@ class EnvOutput:
         self.final_obs = (
             put_tensor_device(self.final_obs, "cpu")
             if self.final_obs is not None
+            else None
+        )
+        self.chunk_obs = (
+            [put_tensor_device(obs, "cpu") for obs in self.chunk_obs]
+            if self.chunk_obs is not None
             else None
         )
         self.dones = self.dones.cpu().contiguous() if self.dones is not None else None
@@ -384,6 +390,7 @@ class Trajectory:
 
     curr_obs: dict[str, Any] = field(default_factory=dict)
     next_obs: dict[str, Any] = field(default_factory=dict)
+    chunk_obs: dict[str, Any] = field(default_factory=dict)
 
     @staticmethod
     def _generate_field_mask(
@@ -531,6 +538,7 @@ class EmbodiedRolloutResult:
 
     curr_obs: list[dict[str, Any]] = field(default_factory=list)  # trajectory_length
     next_obs: list[dict[str, Any]] = field(default_factory=list)  # trajectory_length
+    chunk_obs: list[list[dict[str, Any]]] = field(default_factory=list) # trajectory_length
 
     def append_step_result(self, result: ChunkStepResult):
         if result.actions is not None:
@@ -613,7 +621,7 @@ class EmbodiedRolloutResult:
                     )
                 last_fi.pop("model_action", None)
 
-    def append_transitions(self, curr_obs=None, next_obs=None):
+    def append_transitions(self, curr_obs=None, next_obs=None, chunk_obs=None):
         assert curr_obs is not None and next_obs is not None
         if "task_descriptions" in curr_obs:
             curr_obs.pop("task_descriptions")
@@ -621,6 +629,17 @@ class EmbodiedRolloutResult:
             next_obs.pop("task_descriptions")
         self.curr_obs.append(curr_obs)
         self.next_obs.append(next_obs)
+        if chunk_obs is not None:
+            self.append_chunk_obs(chunk_obs)
+
+    def append_chunk_obs(self, chunk_obs=None):
+        if chunk_obs is None:
+            return
+        cleaned = []
+        for sub_obs in chunk_obs:
+            sub = {k: v for k, v in sub_obs.items() if k != "task_descriptions"}
+            cleaned.append(sub)
+        self.chunk_obs.append(cleaned)
 
     def to_trajectory(self) -> Trajectory:
         # return [trajectory_length, B, ...]
@@ -670,6 +689,16 @@ class EmbodiedRolloutResult:
             trajectory.next_obs = stack_list_of_dict_tensor(self.next_obs)
             for key in trajectory.next_obs.keys():
                 trajectory.next_obs[key] = trajectory.next_obs[key].cpu().contiguous()
+        if len(self.chunk_obs) > 0:
+            inner_stacked = [stack_list_of_dict_tensor(step) for step in self.chunk_obs]
+            keys = inner_stacked[0].keys()
+            trajectory.chunk_obs = {
+                key: torch.stack([s[key] for s in inner_stacked], dim=0)
+                .transpose(1, 2)
+                .cpu()
+                .contiguous()
+                for key in keys
+            }
 
         trajectory.model_weights_id = get_model_weights_id(
             trajectory.versions
@@ -697,6 +726,12 @@ class EmbodiedRolloutResult:
             )
             for i in range(split_size):
                 splited_trajectories[i].next_obs = splited_obs[i]
+        if len(all_trajectory.chunk_obs) > 0:
+            splited_chunk_obs = split_dict_to_chunk(
+                all_trajectory.chunk_obs, split_size, dim=1
+            )
+            for i in range(split_size):
+                splited_trajectories[i].chunk_obs = splited_chunk_obs[i]
 
         if (
             all_trajectory.forward_inputs is not None
@@ -765,6 +800,18 @@ def convert_trajectories_to_batch(
             ]
             if tensors:
                 batch["next_obs"][key] = torch.cat(tensors, dim=1)
+
+    if trajectories[0].chunk_obs:
+        all_keys: set[str] = set()
+        for traj in trajectories:
+            all_keys.update(traj.chunk_obs.keys())
+        batch["chunk_obs"] = {}
+        for key in all_keys:
+            tensors = [
+                traj.chunk_obs[key] for traj in trajectories if key in traj.chunk_obs
+            ]
+            if tensors:
+                batch["chunk_obs"][key] = torch.cat(tensors, dim=1)
 
     if trajectories[0].forward_inputs:
         all_keys: set[str] = set()

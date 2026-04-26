@@ -59,6 +59,8 @@ class EnvWorker(Worker):
         self._component_placement = HybridComponentPlacement(cfg, Cluster())
 
         self.collect_transitions = self.cfg.rollout.get("collect_transitions", False)
+        self.collect_chunk_obs = self.cfg.env.get("train", {}).get("collect_chunk_obs", False)
+        self.chunk_obs_stride = self.cfg.env.get("train", {}).get("chunk_obs_stride", 1)
         self.collect_prev_infos = self.cfg.rollout.get("collect_prev_infos", True)
         self.stage_num = self.cfg.rollout.pipeline_stage_num
 
@@ -376,6 +378,16 @@ class EnvWorker(Worker):
             if self.enable_offload and hasattr(self.env_list[i], "offload"):
                 self.env_list[i].offload()
 
+    def _sparsify_chunk_obs(self, obs_list):
+        if not isinstance(obs_list, (list, tuple)) or len(obs_list) == 0:
+            return None
+        stride = self.chunk_obs_stride
+        if stride == -1:
+            return [obs_list[0]] if len(obs_list) == 1 else [obs_list[0], obs_list[-1]]
+        if stride <= 1:
+            return list(obs_list)
+        return list(obs_list[::stride])
+
     @Worker.timer("env_interact_step")
     def env_interact_step(
         self, chunk_actions: torch.Tensor, stage_id: int
@@ -436,10 +448,14 @@ class EnvWorker(Worker):
             if "intervene_action" in infos["final_info"]:
                 intervene_actions = infos["final_info"]["intervene_action"]
                 intervene_flags = infos["final_info"]["intervene_flag"]
-
+        if self.collect_chunk_obs:
+            chunk_obs = self._sparsify_chunk_obs(obs_list)
+        else:
+            chunk_obs = None
         env_output = EnvOutput(
             obs=extracted_obs,
             final_obs=final_obs,
+            chunk_obs=chunk_obs,
             rewards=chunk_rewards,
             dones=chunk_dones,
             terminations=chunk_terminations,
@@ -1012,9 +1028,12 @@ class EnvWorker(Worker):
                             else env_output.obs
                         )
                         self.rollout_results[stage_id].append_transitions(
-                            curr_obs, next_obs
+                            curr_obs, next_obs, env_output.chunk_obs
                         )
-
+                    elif self.collect_chunk_obs:
+                        self.rollout_results[stage_id].append_chunk_obs(
+                            env_output.chunk_obs
+                        )
                     env_outputs[stage_id] = env_output
                     self.record_env_metrics(env_metrics, env_info, epoch)
 
