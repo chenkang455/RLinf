@@ -357,7 +357,7 @@ class DreamZeroActionHead(WANPolicyHead):
             sample_scheduler_action.set_timesteps(self.num_inference_steps, device=device, shift=self.sigma_shift)
 
         # Rescale video sigmas [sigma_max, 0] -> [sigma_max, video_inference_final_noise].
-        if getattr(self.config, "decouple_inference_noise", False):
+        if self.config.decouple_inference_noise:
             video_final_noise = float(self.config.video_inference_final_noise)
             sigma_max = sample_scheduler.sigmas[0].item()
             sample_scheduler.sigmas = (
@@ -365,11 +365,19 @@ class DreamZeroActionHead(WANPolicyHead):
                 + video_final_noise
             )
             sample_scheduler.timesteps = (sample_scheduler.sigmas[:-1] * 1000).to(torch.int64)
+        # freeze video noise
+        video_mode = getattr(self, "eval_video_mode", "normal")
+        if video_mode == "frozen_noise":
+            frozen_noisy_input = noisy_input.clone()
+            frozen_video_timestep = sample_scheduler.timesteps[0]
 
         prev_predictions = []
         self.skip_countdown = 0
         for index, current_timestep in enumerate(sample_scheduler.timesteps):
-            video_timestep = sample_scheduler.timesteps[index]
+            if video_mode == "frozen_noise":
+                video_timestep = frozen_video_timestep
+            else:
+                video_timestep = sample_scheduler.timesteps[index]
             action_timestep = sample_scheduler_action.timesteps[index]
             timestep = torch.ones((batch_size, self.num_frame_per_block), device=device, dtype=torch.int64) * video_timestep
             timestep_action = torch.ones((batch_size, self.action_horizon), device=device, dtype=torch.int64) * action_timestep
@@ -383,9 +391,10 @@ class DreamZeroActionHead(WANPolicyHead):
                     start_frame = frame_len - self.num_frame_per_block
                     end_frame = frame_len
                 y = policy_inputs["ys"][:, :, start_frame : end_frame]
-                # eval_video_mode: "normal" | "clean" | "clean_noised" | "zero" | "random"
-                video_mode = getattr(self, "eval_video_mode", "normal")
-                if video_mode in ("clean", "clean_noised"):
+                # eval_video_mode: "normal" | "clean" | "clean_noised" | "zero" | "random" | "frozen_noise"
+                if video_mode == "frozen_noise":
+                    noisy_input = frozen_noisy_input
+                elif video_mode in ("clean", "clean_noised"):
                     clean = (
                         sampling_state["image_latents"]
                         .expand(-1, self.num_frame_per_block, -1, -1, -1)
