@@ -1031,8 +1031,13 @@ class EnvWorker(Worker):
                             curr_obs, next_obs, env_output.chunk_obs
                         )
                     elif self.collect_chunk_obs:
+                        chunk_obs = (
+                            [curr_obs, *env_output.chunk_obs]
+                            if env_output.chunk_obs is not None
+                            else None
+                        )
                         self.rollout_results[stage_id].append_chunk_obs(
-                            env_output.chunk_obs
+                            chunk_obs
                         )
                     env_outputs[stage_id] = env_output
                     self.record_env_metrics(env_metrics, env_info, epoch)

@@ -15,8 +15,8 @@ hydra:
 cluster:
   num_nodes: 1
   component_placement:
-    rollout,env: 0
-    actor: 1
+    rollout,env: all
+    actor: all
 
 runner:
   task_type: embodied
@@ -26,7 +26,7 @@ runner:
     experiment_name: "libero_object_0_nft_dreamzero"
     logger_backends: ["tensorboard"] # wandb, swanlab
 
-  max_epochs: 1
+  max_epochs: 200
   max_steps: -1
 
   only_eval: False
@@ -37,7 +37,7 @@ runner:
   skip_initial_weight_sync: True
 
 algorithm:
-  group_size: 2
+  group_size: 8
   reward_coef: 1.0
   rollout_epoch: 1
   eval_rollout_epoch: 1
@@ -48,7 +48,7 @@ algorithm:
   update_epoch: 1
   adv_type: grpo
   loss_type: embodied_nft
-  filter_rewards: False
+  filter_rewards: True
   rewards_lower_bound: 0.1
   rewards_upper_bound: 0.9
 
@@ -86,7 +86,7 @@ env:
   train:
     task_id_filter: [0]
     group_size: ${algorithm.group_size}
-    total_num_envs: 2
+    total_num_envs: 64
     max_episode_steps: 256
     max_steps_per_rollout_epoch: 256
     collect_chunk_obs: True
@@ -112,7 +112,7 @@ rollout:
   group_name: "RolloutGroup"
   generation_backend: "huggingface"
   recompute_logprobs: False
-  enable_offload: False
+  enable_offload: True
   pipeline_stage_num: 1
 
   model:
@@ -125,25 +125,21 @@ rollout:
     num_action_chunks: ${actor.model.num_action_chunks}
     embodiment_tag: ${actor.model.embodiment_tag}
     tokenizer_path: ${actor.model.tokenizer_path}
-    num_steps: ${actor.model.num_steps}
-    context_num_frames: ${actor.model.context_num_frames}
 
 actor:
   group_name: "ActorGroup"
   training_backend: "fsdp"
-  micro_batch_size: 1
-  global_batch_size: 4
+  micro_batch_size: 32
+  global_batch_size: 512
   seed: 42
-  enable_offload: False
+  enable_offload: True
 
   model:
     model_type: "dreamzero"
-    model_path: /mnt/project_rlinf/chenkang/RLinf_codes/RLinf_dreamzero/third_party/dreamzero_5b_huining/checkpoints/dreamzero_libero_wan22_full_finetune_1chunk_decouple/checkpoint-10000
+    model_path: /mnt/project_rlinf/chenkang/RLinf_codes/RLinf_dreamzero/third_party/dreamzero_5b_huining/checkpoints/dreamzero_libero_wan22_full_finetune_1chunk/checkpoint-12000
 
     action_dim: 7
     num_action_chunks: 16
-    num_steps: 4
-    context_num_frames: 9
     embodiment_tag: "libero_sim"
     is_lora: false                # TODO: lora in rlinf, disable here
     use_lora: True                 # toggle LoRA injection in get_model
@@ -158,11 +154,11 @@ actor:
       video_inference_final_noise: 0.8
     action_head_cfg_post:
       num_inference_steps: 4
-      eval_video_mode: "frozen_noise"   # "normal" | "clean" | "clean_noised" | "zero" | "random" | "frozen_noise"
+      eval_video_mode: "normal"   # "normal" | "clean" | "clean_noised" | "zero" | "random" | "frozen_noise"
       eval_action_sampler: "unipc" # "unipc" | "euler"
 
   optim:
-    lr: 5.0e-5                     # LoRA-friendly lr
+    lr: 5.0e-6                     # LoRA-friendly lr
     value_lr: 1.0e-4
     adam_beta1: 0.9
     adam_beta2: 0.95

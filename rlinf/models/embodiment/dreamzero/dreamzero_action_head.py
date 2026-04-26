@@ -1,7 +1,8 @@
 import torch
+from diffusers.schedulers.scheduling_flow_match_euler_discrete import (
+    FlowMatchEulerDiscreteScheduler,
+)
 from einops import rearrange
-from transformers.feature_extraction_utils import BatchFeature
-
 from groot.vla.model.dreamzero.action_head.wan_flow_matching_action_tf import (
     WANPolicyHead,
     WANPolicyHeadConfig,
@@ -9,9 +10,7 @@ from groot.vla.model.dreamzero.action_head.wan_flow_matching_action_tf import (
 from groot.vla.model.dreamzero.modules.flow_unipc_multistep_scheduler import (
     FlowUniPCMultistepScheduler,
 )
-from diffusers.schedulers.scheduling_flow_match_euler_discrete import (
-    FlowMatchEulerDiscreteScheduler,
-)
+from transformers.feature_extraction_utils import BatchFeature
 
 
 class DreamZeroActionHead(WANPolicyHead):
@@ -23,8 +22,7 @@ class DreamZeroActionHead(WANPolicyHead):
     def forward(self, backbone_output: BatchFeature, action_input: BatchFeature) -> BatchFeature:
         """Run the local DreamZero training forward path."""
         self.set_frozen_modules_to_eval_mode()
-        breakpoint()
-        policy_inputs = self.prepare_policy_inputs(data=action_input, mode="training")
+        policy_inputs = self.prepare_policy_inputs(data=action_input, mode="sft")
         training_targets = self.build_training_noise_targets(policy_inputs)
         loss_dict = self.compute_training_losses(policy_inputs, training_targets)
         return loss_dict
@@ -102,7 +100,7 @@ class DreamZeroActionHead(WANPolicyHead):
     def sample_action_video(self, backbone_output: BatchFeature, action_input: BatchFeature) -> BatchFeature:
         """Sample action video from DreamZero."""
         self.set_frozen_modules_to_eval_mode()
-        policy_inputs = self.prepare_policy_inputs(data=action_input, mode="inference")
+        policy_inputs = self.prepare_policy_inputs(data=action_input, mode="eval")
         sampling_state = self.prepare_noise_action_video(policy_inputs)
         kv_caches, crossattn_caches = self.prepare_kv_cache(sampling_state["noise_obs"])
         self.warmup_kv_cache(policy_inputs, sampling_state, kv_caches, crossattn_caches)
@@ -113,33 +111,38 @@ class DreamZeroActionHead(WANPolicyHead):
             crossattn_caches=crossattn_caches,
         )
 
-    def prepare_policy_inputs(self, data: BatchFeature, mode: str = "inference") -> BatchFeature:
-        """Prepare DreamZero policy inputs for inference or training."""
+    def prepare_policy_inputs(self, data: BatchFeature, mode: str = "eval") -> BatchFeature:
+        """Prepare DreamZero policy inputs for sft, eval, or nft."""
         # embodiment id input
         embodiment_id = data.embodiment_id
         self.current_start_frame = 0
         # state features input
-        if mode == "training":
+        if mode == "sft":
             state_features = data.state
             prompt_embs = self.encode_prompt(data["text"], data["text_attention_mask"])
-        elif mode == "inference":
+        elif mode == "eval":
             state_features = data.state.to(dtype=torch.bfloat16)
             text_inputs = self._prepare_text_inputs(data)
             prompt_embs = [
                 self.encode_prompt(text, attention_mask)
                 for text, attention_mask in text_inputs
             ]
+        elif mode == "nft":
+            state_features = data.state.to(dtype=torch.bfloat16)
+            text_inputs = self._prepare_text_inputs(data)
+            cond_text, cond_mask = text_inputs[0]
+            prompt_embs = self.encode_prompt(cond_text, cond_mask)
         # video process
-        if mode == "training":
+        if mode == "sft":
             videos = self._normalize_videos(data["images"],output_dtype=self.dtype)
-        elif mode == "inference":
+        elif mode in ("eval", "nft"):
             videos = self._normalize_videos(data["images"],output_dtype=torch.bfloat16)
         _, _, num_frames, height, width = videos.shape
         # `encode_image` expects frame-major layout `[B, T, C, H, W]`.
         image = videos[:, :, :1].transpose(1, 2)
-        if mode == "training":
+        if mode in ("sft", "nft"):
             image_num_frames = num_frames
-        elif mode == "inference":
+        elif mode == "eval":
             image_num_frames = self.num_frames
         clip_feas, ys, image_latents = self.encode_image(image, image_num_frames, height, width)
         clip_feas = clip_feas.to(dtype=image_latents.dtype)
@@ -153,18 +156,20 @@ class DreamZeroActionHead(WANPolicyHead):
                 "clip_feas": clip_feas,
                 "ys": ys,
             }
-        if mode == "training":
-            outputs["actions"] = data.action
-            outputs["has_real_action"] = data.has_real_action
-            outputs["action_mask"] = data.action_mask
+        if mode in ("sft", "nft"):
             outputs["video_latents"] = self.encode_video(
                 videos,
                 self.tiled,
                 (self.tile_size_height, self.tile_size_width),
                 (self.tile_stride_height, self.tile_stride_width),
             )
-        elif mode == "inference":
+        elif mode == "eval":
             outputs["image_latents"] = image_latents
+        # action input
+        if mode == "sft":
+            outputs["actions"] = data.action
+            outputs["has_real_action"] = data.has_real_action
+            outputs["action_mask"] = data.action_mask
         return BatchFeature(data=outputs)
 
     def prepare_noise_action_video(self, policy_inputs: BatchFeature) -> BatchFeature:

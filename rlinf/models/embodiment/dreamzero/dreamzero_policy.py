@@ -208,14 +208,21 @@ class DreamZeroPolicy(VLA, BasePolicy):
                 wrist = np.asarray(wrist)
 
         def _resize_bt_hwc_uint8(x, h=256, w=256):
-            # x: [B,H,W,C
-            B = x.shape[0]
-            out = np.empty((B, h, w, 3), dtype=np.uint8)
-            for b in range(B):
+            # x: [B,H,W,C] or [B,T,H,W,C]
+            has_time_dim = x.ndim == 5
+            if has_time_dim:
+                batch, time = x.shape[:2]
+                x = x.reshape(batch * time, *x.shape[2:])
+            else:
+                batch, time = x.shape[0], None
+            out = np.empty((x.shape[0], h, w, 3), dtype=np.uint8)
+            for b in range(x.shape[0]):
                 frame = x[b]
                 if frame.dtype != np.uint8:
                     frame = frame.astype(np.uint8)
                 out[b] = cv2.resize(frame, (w, h), interpolation=cv2.INTER_AREA)
+            if has_time_dim:
+                out = out.reshape(batch, time, h, w, 3)
             return out
 
         main = _resize_bt_hwc_uint8(main)
@@ -234,20 +241,51 @@ class DreamZeroPolicy(VLA, BasePolicy):
             s_np = np.zeros((B, 8), dtype=np.float32)
         if s_np.ndim == 1:
             s_np = s_np[None, :]
+        elif s_np.ndim == 3:
+            pass
+        elif s_np.ndim > 3:
+            s_np = s_np.reshape(B, s_np.shape[1], -1)
         elif s_np.ndim > 2:
             s_np = s_np.reshape(B, -1)
         s_np = s_np.astype(np.float32)
-        state_bt = s_np[:, None, :]
+        state_bt = s_np if s_np.ndim == 3 else s_np[:, None, :]
         prompts = prompts if prompts is not None else [""] * B
         if isinstance(prompts, str):
             prompts = [prompts] * B
         converted_obs = {
-            "video.image": main,  # [B,H,W,C]
-            "video.wrist_image": wrist,  # [B,H,W,C]
-            "state.state": state_bt,  # [B,1,8]
+            "video.image": main,  # [B,T,H,W,C] or [B,1,H,W,C]
+            "video.wrist_image": wrist,  # [B,T,H,W,C] or [B,1,H,W,C]
+            "state.state": state_bt,  # [B,T,D] or [B,1,D]
             "annotation.language.action_text": list(prompts),  # list[str], len=B
         }
         return converted_obs
+
+    def _prepare_nft_obs(
+        self,
+        forward_inputs: dict[str, Any],
+        device: torch.device,
+    ) -> BatchFeature:
+        """Prepare NFT inputs from the collected current-plus-chunk obs."""
+        chunk_obs = forward_inputs["chunk_obs"]
+        chunk_obs["states"] = chunk_obs["states"][:, :1].float().to(device)
+        converted_obs = self._observation_convert(chunk_obs)
+        batch = Batch(obs=converted_obs)
+        normalized_input = self._process_batch(batch)
+        if isinstance(normalized_input, Batch):
+            normalized_input = normalized_input.__getstate__()
+
+        target_dtype = next(self.parameters()).dtype
+        for key, value in list(normalized_input.items()):
+            if not torch.is_tensor(value):
+                continue
+            if value.dtype == torch.float32 and target_dtype != torch.float32:
+                value = value.to(dtype=target_dtype)
+            normalized_input[key] = value.to(device)
+
+        for key in ("text", "text_attention_mask", "embodiment_id"):
+            if key in forward_inputs:
+                normalized_input[key] = forward_inputs[key].to(device)
+        return BatchFeature(data=normalized_input)
 
     def predict_action_batch(self, env_obs, mode, **kwargs) -> np.ndarray:
         """
@@ -327,64 +365,50 @@ class DreamZeroPolicy(VLA, BasePolicy):
         nft_inputs: dict[str, torch.Tensor],
         **kwargs,
     ) -> dict[str, Any]:
-        """Single-step action-branch velocity prediction used by NFT loss.
-
-        Reuses the obs cached at rollout time to rebuild an `inference`-style
-        policy_inputs, then calls `action_head.model(...)` once with the
-        NFT-provided noisy action `x_t` and timestep. The video branch is
-        fed the clean image latent at timestep=0 so its output is ignored.
-        """
+        """NFT forward pass."""
+        # prepare the policy inputs
         action_head = self.action_head
         device = next(self.parameters()).device
-
-        # Rebuild obs BatchFeature from cached tensors. `forward_inputs` stores
-        # obs tensors with their original keys alongside NFT/action entries;
-        # filter those out so only obs reaches `prepare_policy_inputs`.
-        skip_keys = {"action", "nft_x0", "nft_noise_level"}
-        nft_obs = {
-            k: v.to(device)
-            for k, v in forward_inputs.items()
-            if torch.is_tensor(v) and k not in skip_keys
-        }
-        obs = BatchFeature(data=nft_obs)
-
-        policy_inputs = action_head.prepare_policy_inputs(data=obs, mode="inference")
-
+        obs = self._prepare_nft_obs(forward_inputs, device)
+        policy_inputs = action_head.prepare_policy_inputs(data=obs, mode="nft")
+        # prepare the nft inputs
         x_t = nft_inputs["x_t"].to(device)
         t = nft_inputs["timesteps"].to(device)
         if t.ndim == 1:
             t = t[:, None].expand(-1, x_t.shape[1])
-            
-        # Video branch: treat cached image_latents as clean video at timestep=0.
-        image_latents = policy_inputs["image_latents"]  # [B, C, 1, Hl, Wl]
-        video_frames = 1 + action_head.model.num_frame_per_block
-        noisy_latents = image_latents.expand(-1, -1, video_frames, -1, -1)
-        B, _, _, Hl, Wl = noisy_latents.shape
-        video_timestep = torch.zeros((B, video_frames), device=device, dtype=torch.int64)
+        # video latents: [B, C, T_lat, Hl, Wl]
+        video_latents = policy_inputs["video_latents"]
+        latents = video_latents.transpose(1, 2)              # [B, T_lat, C, Hl, Wl]
+        B, T_lat, _, Hl, Wl = latents.shape
+        # Use sigma for interpolation, but feed DiT scheduler timesteps
+        # consistent with SFT/eval (`scheduler.timesteps = sigma * train_steps`).
+        video_sigma = t[:, :1].expand(-1, T_lat).to(dtype=latents.dtype)
+        action_timestep = t * action_head.scheduler.num_train_timesteps
+        video_timestep = action_timestep[:, :1].expand(-1, T_lat).contiguous()
+        video_noise = torch.randn_like(latents)
+        noisy_latents = (
+            (1.0 - video_sigma[:, :, None, None, None]) * latents
+            + video_sigma[:, :, None, None, None] * video_noise
+        )                                                     
         frame_seqlen = (Hl // 2) * (Wl // 2)
-        seq_len = noisy_latents.shape[2] * frame_seqlen
-        y = policy_inputs["ys"][:, :, :video_frames].to(device)
-        prompt_embs = policy_inputs["prompt_embs"]
-        if isinstance(prompt_embs, list):
-            prompt_embs = prompt_embs[0]
-
+        seq_len = T_lat * frame_seqlen
+        # build latent noisy action and target
         with torch.amp.autocast(dtype=torch.bfloat16, device_type=device.type):
             _, action_noise_pred = action_head.model(
-                noisy_latents,
+                noisy_latents.transpose(1, 2),                # [B, C, T_lat, Hl, Wl]
                 timestep=video_timestep,
                 clip_feature=policy_inputs["clip_feas"].to(device),
-                y=y,
-                context=prompt_embs.to(device),
+                y=policy_inputs["ys"].to(device),
+                context=policy_inputs["prompt_embs"].to(device),
                 seq_len=seq_len,
                 state=policy_inputs["state_features"],
                 embodiment_id=policy_inputs["embodiment_id"],
                 action=x_t,
-                timestep_action=t,
+                timestep_action=action_timestep,
+                clean_x=video_latents,
             )
 
-        return {
-            "v_theta": action_noise_pred,
-        }
+        return {"v_theta": action_noise_pred}
 
     def sft_forward(self, data=None, **kwargs):
         if data is None:

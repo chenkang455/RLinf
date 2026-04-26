@@ -189,7 +189,6 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
     @Worker.timer("run_training")
     def run_training(self) -> None:
         """Run NFT training with off-policy decay support."""
-        breakpoint()
         if self.is_weight_offloaded:
             self.load_param_and_grad(self.device)
         if self.is_optimizer_offloaded:
