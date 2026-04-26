@@ -356,6 +356,16 @@ class DreamZeroActionHead(WANPolicyHead):
             sample_scheduler.set_timesteps(self.num_inference_steps, device=device, shift=self.sigma_shift)
             sample_scheduler_action.set_timesteps(self.num_inference_steps, device=device, shift=self.sigma_shift)
 
+        # Rescale video sigmas [sigma_max, 0] -> [sigma_max, video_inference_final_noise].
+        if getattr(self.config, "decouple_inference_noise", False):
+            video_final_noise = float(self.config.video_inference_final_noise)
+            sigma_max = sample_scheduler.sigmas[0].item()
+            sample_scheduler.sigmas = (
+                sample_scheduler.sigmas * (sigma_max - video_final_noise) / sigma_max
+                + video_final_noise
+            )
+            sample_scheduler.timesteps = (sample_scheduler.sigmas[:-1] * 1000).to(torch.int64)
+
         prev_predictions = []
         self.skip_countdown = 0
         for index, current_timestep in enumerate(sample_scheduler.timesteps):

@@ -129,6 +129,14 @@ actor:
     add_value_head: True
     precision: bf16
 
+    action_head_cfg_pre:
+      decouple_inference_noise: False
+      video_inference_final_noise: 0.8
+    action_head_cfg_post:
+      num_inference_steps: 16
+      eval_video_mode: "normal"   # "normal" | "clean" | "clean_noised" | "zero" | "random"
+      eval_action_sampler: "unipc" # "unipc" | "euler"
+
   fsdp_config:
     strategy: "fsdp"
     gradient_checkpointing: False

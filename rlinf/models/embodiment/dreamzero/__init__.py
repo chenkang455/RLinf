@@ -115,13 +115,21 @@ def get_model(cfg: DictConfig, torch_dtype=None):
         "rlinf.models.embodiment.dreamzero.dreamzero_action_head.DreamZeroActionHead"
     ) 
     action_head_cfg = dreamzero_config.action_head_cfg.get("config", {})
-    # num_inference_steps
-    num_inference_steps = cfg.get("num_inference_steps", None)
-    if num_inference_steps is not None:
-        action_head_cfg["num_inference_steps"] = num_inference_steps
-        dreamzero_config.num_steps = num_inference_steps
-    else:
-        dreamzero_config.num_steps = action_head_cfg.get("num_inference_steps")
+    # action_head_cfg_pre: merged into action_head_cfg before model construction
+    # (consumed by WANPolicyHead.__init__ / its config dataclass).
+    pre_overrides = OmegaConf.to_container(
+        cfg.get("action_head_cfg_pre", {}) or {}, resolve=True
+    )
+    for k, v in pre_overrides.items():
+        action_head_cfg[k] = v
+    post_overrides = OmegaConf.to_container(
+        cfg.get("action_head_cfg_post", {}) or {}, resolve=True
+    )
+    # nft_worker reads dreamzero_config.num_steps; mirror from post override
+    # (preferred, since num_inference_steps lives in post) or fall back to config.
+    dreamzero_config.num_steps = post_overrides.get(
+        "num_inference_steps", action_head_cfg.get("num_inference_steps")
+    )
     use_lora = cfg.get("use_lora", False)
     if use_lora:
         action_head_cfg["skip_component_loading"] = True
@@ -188,12 +196,11 @@ def get_model(cfg: DictConfig, torch_dtype=None):
     _promote_scalar_params_to_1d(model)
     model = model.to(dtype=torch_dtype)
     model.action_head.trt_engine = None
-    if num_inference_steps is not None:
-        model.action_head.num_inference_steps = num_inference_steps
-    model.action_head.eval_video_mode = str(
-        cfg.get("eval_video_mode", "normal")
+    # action_head_cfg_post: setattr on model.action_head after construction
+    # (runtime knobs not stored in config, e.g. eval_video_mode).
+    post_overrides = OmegaConf.to_container(
+        cfg.get("action_head_cfg_post", {}) or {}, resolve=True
     )
-    model.action_head.eval_action_sampler = str(
-        cfg.get("eval_action_sampler", "unipc")
-    )
+    for k, v in post_overrides.items():
+        setattr(model.action_head, k, v)
     return model
