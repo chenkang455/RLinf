@@ -371,20 +371,20 @@ class DreamZeroPolicy(VLA, BasePolicy):
         device = next(self.parameters()).device
         obs = self._prepare_nft_obs(forward_inputs, device)
         policy_inputs = action_head.prepare_policy_inputs(data=obs, mode="nft")
-        # prepare the nft inputs
-        x_t = nft_inputs["x_t"].to(device)
-        t = nft_inputs["timesteps"].to(device)
-        if t.ndim == 1:
-            t = t[:, None].expand(-1, x_t.shape[1])
-        # video latents: [B, C, T_lat, Hl, Wl]
+        # action inputs [B, horizon, action_dim]
+        noisy_actions = nft_inputs["x_t"].to(device)
+        # video latents inputs: [B, C, T_lat, Hl, Wl]
         video_latents = policy_inputs["video_latents"]
         latents = video_latents.transpose(1, 2)              # [B, T_lat, C, Hl, Wl]
         B, T_lat, _, Hl, Wl = latents.shape
-        # Use sigma for interpolation, but feed DiT scheduler timesteps
-        # consistent with SFT/eval (`scheduler.timesteps = sigma * train_steps`).
+        # prepare the timesteps
+        t = nft_inputs["timesteps"].to(device)
+        if t.ndim == 1:
+            t = t[:, None].expand(-1, noisy_actions.shape[1])
         video_sigma = t[:, :1].expand(-1, T_lat).to(dtype=latents.dtype)
         action_timestep = t * action_head.scheduler.num_train_timesteps
         video_timestep = action_timestep[:, :1].expand(-1, T_lat).contiguous()
+        # prepare the noisy video latents
         video_noise = torch.randn_like(latents)
         noisy_latents = (
             (1.0 - video_sigma[:, :, None, None, None]) * latents
@@ -403,11 +403,10 @@ class DreamZeroPolicy(VLA, BasePolicy):
                 seq_len=seq_len,
                 state=policy_inputs["state_features"],
                 embodiment_id=policy_inputs["embodiment_id"],
-                action=x_t,
+                action=noisy_actions,
                 timestep_action=action_timestep,
                 clean_x=video_latents,
             )
-
         return {"v_theta": action_noise_pred}
 
     def sft_forward(self, data=None, **kwargs):

@@ -131,7 +131,6 @@ def get_model(cfg: DictConfig, torch_dtype=None):
         action_head_cfg[k] = v
     post_overrides = _to_plain_dict(cfg.get("action_head_cfg_post", {}))
     # nft_worker reads dreamzero_config.num_steps; mirror from post override
-    # (preferred, since num_inference_steps lives in post) or fall back to config.
     dreamzero_config.num_steps = post_overrides.get(
         "num_inference_steps", action_head_cfg.get("num_inference_steps")
     )

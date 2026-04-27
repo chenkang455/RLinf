@@ -93,7 +93,33 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
             )
         else:
             rollout_state_dict = self.rollout_model_state_dict
+        if self.cfg.rollout.get("sync_trainable_only", False):
+            assert self.cfg.rollout.get("sync_weight_load_instant", True), (
+                "rollout.sync_trainable_only requires "
+                "rollout.sync_weight_load_instant=True because rollout receives a "
+                "partial state_dict."
+            )
+            rollout_state_dict = self._filter_trainable_state_dict(rollout_state_dict)
         return rollout_state_dict
+
+    def _filter_trainable_state_dict(self, state_dict: dict) -> dict:
+        """Keep only trainable parameters for lightweight rollout sync."""
+        trainable_names = {
+            name for name, param in self.model.named_parameters() if param.requires_grad
+        }
+        filtered_state_dict = {
+            key: value for key, value in state_dict.items() if key in trainable_names
+        }
+        if not filtered_state_dict:
+            raise RuntimeError(
+                "sync_trainable_only produced an empty state_dict. "
+                "Check that FSDP state_dict keys match trainable parameter names."
+            )
+        self.log_info(
+            "Syncing trainable-only rollout state dict: "
+            f"{len(filtered_state_dict)}/{len(state_dict)} tensors."
+        )
+        return filtered_state_dict
 
     async def sync_model_to_rollout(self) -> None:
         """
