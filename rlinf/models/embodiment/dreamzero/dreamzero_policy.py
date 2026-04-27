@@ -366,48 +366,121 @@ class DreamZeroPolicy(VLA, BasePolicy):
         **kwargs,
     ) -> dict[str, Any]:
         """NFT forward pass."""
-        # prepare the policy inputs
+        # prepare inputs
         action_head = self.action_head
+        action_head.set_frozen_modules_to_eval_mode()
         device = next(self.parameters()).device
         obs = self._prepare_nft_obs(forward_inputs, device)
         policy_inputs = action_head.prepare_policy_inputs(data=obs, mode="nft")
-        # action inputs [B, horizon, action_dim]
         noisy_actions = nft_inputs["x_t"].to(device)
-        # video latents inputs: [B, C, T_lat, Hl, Wl]
         video_latents = policy_inputs["video_latents"]
-        latents = video_latents.transpose(1, 2)              # [B, T_lat, C, Hl, Wl]
-        B, T_lat, _, Hl, Wl = latents.shape
-        # prepare the timesteps
+        latents = video_latents.transpose(1, 2)
+        batch_size, latent_frames, _, latent_height, latent_width = latents.shape
+        block_frames = latent_frames - 1
+        if block_frames != action_head.num_frame_per_block:
+            raise ValueError(
+                "DreamZero NFT KV-cache forward expects one reference latent frame "
+                f"plus one rollout block ({1 + action_head.num_frame_per_block} "
+                f"frames), got {latent_frames} latent frames."
+            )
+        prompt_context = [policy_inputs["prompt_embs"].to(device)]
+        clip_feature = policy_inputs["clip_feas"].to(device)
+        y = policy_inputs["ys"].to(device)
+        state_features = policy_inputs["state_features"]
+        embodiment_id = policy_inputs["embodiment_id"]
+
+        # prepare timesteps.
         t = nft_inputs["timesteps"].to(device)
         if t.ndim == 1:
             t = t[:, None].expand(-1, noisy_actions.shape[1])
-        video_sigma = t[:, :1].expand(-1, T_lat).to(dtype=latents.dtype)
         action_timestep = t * action_head.scheduler.num_train_timesteps
-        video_timestep = action_timestep[:, :1].expand(-1, T_lat).contiguous()
-        # prepare the noisy video latents
-        video_noise = torch.randn_like(latents)
+        freeze_video_noise = action_head.eval_video_mode == "frozen_noise"
+        if freeze_video_noise:
+            video_sigma = torch.ones(
+                (batch_size, latent_frames),
+                device=device,
+                dtype=latents.dtype,
+            )
+            video_timestep = torch.full(
+                (batch_size, block_frames),
+                float(action_head.scheduler.timesteps[0]),
+                device=device,
+                dtype=action_timestep.dtype,
+            )
+        else:
+            video_sigma = t[:, :1].expand(-1, latent_frames).to(dtype=latents.dtype)
+            video_timestep = action_timestep[:, :1].expand(-1, block_frames)
+        video_timestep = video_timestep.contiguous()
+        # prepare video noise.
+        if "nft_video_noise" in forward_inputs:
+            video_noise = forward_inputs["nft_video_noise"].to(
+                device=device,
+                dtype=latents.dtype,
+            )
+            if video_noise.shape != latents.shape:
+                raise ValueError(
+                    "forward_inputs['nft_video_noise'] must match video latents shape "
+                    f"{tuple(latents.shape)}, got {tuple(video_noise.shape)}."
+                )
+        else:
+            video_noise = torch.randn_like(latents)
         noisy_latents = (
             (1.0 - video_sigma[:, :, None, None, None]) * latents
             + video_sigma[:, :, None, None, None] * video_noise
-        )                                                     
-        frame_seqlen = (Hl // 2) * (Wl // 2)
-        seq_len = T_lat * frame_seqlen
-        # build latent noisy action and target
+        )
+        current_noisy_latents = noisy_latents[:, 1:].transpose(1, 2).contiguous()
+        # prepare kv cache.
+        frame_seqlen = (latent_height // 2) * (latent_width // 2)
+        seq_len = block_frames * frame_seqlen
+        kv_caches, crossattn_caches = action_head.prepare_kv_cache(
+            current_noisy_latents.transpose(1, 2)
+        )
+        warmup_timestep = torch.zeros((batch_size, 1), device=device, dtype=torch.int64)
+        first_clean_frame = video_latents[:, :, :1].contiguous()
+        y_warmup = y[:, :, :1]
+        y_block = y[:, :, 1 : 1 + block_frames]
+        if y_block.shape[2] < block_frames:
+            y_block = y[:, :, -block_frames:]
+
+        # run diffusion steps.
         with torch.amp.autocast(dtype=torch.bfloat16, device_type=device.type):
-            _, action_noise_pred = action_head.model(
-                noisy_latents.transpose(1, 2),                # [B, C, T_lat, Hl, Wl]
+            # run warmup diffusion steps.
+            action_head._run_diffusion_steps(
+                noisy_input=first_clean_frame,
+                timestep=warmup_timestep,
+                action=None,
+                timestep_action=None,
+                state=None,
+                embodiment_id=None,
+                context=prompt_context,
+                seq_len=frame_seqlen,
+                y=y_warmup,
+                clip_feature=clip_feature,
+                kv_caches=kv_caches,
+                crossattn_caches=crossattn_caches,
+                kv_cache_metadata={"start_frame": 0, "update_kv_cache": True},
+            )
+            # run diffusion steps.
+            predictions = action_head._run_diffusion_steps(
+                noisy_input=current_noisy_latents,
                 timestep=video_timestep,
-                clip_feature=policy_inputs["clip_feas"].to(device),
-                y=policy_inputs["ys"].to(device),
-                context=policy_inputs["prompt_embs"].to(device),
+                clip_feature=clip_feature,
+                y=y_block,
+                context=prompt_context,
                 seq_len=seq_len,
-                state=policy_inputs["state_features"],
-                embodiment_id=policy_inputs["embodiment_id"],
+                state=state_features,
+                embodiment_id=embodiment_id,
                 action=noisy_actions,
                 timestep_action=action_timestep,
-                clean_x=video_latents,
+                kv_caches=kv_caches,
+                crossattn_caches=crossattn_caches,
+                kv_cache_metadata={"start_frame": 1, "update_kv_cache": False},
             )
-        return {"v_theta": action_noise_pred}
+            _, action_noise_pred = predictions[0]
+        outputs = {"v_theta": action_noise_pred}
+        if "nft_video_noise" not in forward_inputs:
+            outputs["nft_video_noise"] = video_noise
+        return outputs
 
     def sft_forward(self, data=None, **kwargs):
         if data is None:

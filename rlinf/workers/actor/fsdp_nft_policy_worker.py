@@ -340,6 +340,7 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
 
         if recompute_v:
             # recompute v_old: always for resample, opt-in for rollout
+            forward_inputs.pop("nft_video_noise", None)
             xcur = forward_inputs["nft_xcur"]
             step_indices = forward_inputs["nft_step_index"]
             _, t = self._build_schedule_and_timesteps(
@@ -356,6 +357,7 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         """Recompute the old velocity with the rollout model."""
         micro_bs = self.cfg.actor.micro_batch_size
         v_old_buffer = []
+        video_noise_buffer = []
         training_was_on_device = False
         cleanup_rollout_model = False
 
@@ -394,6 +396,8 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
                     compute_values=False,
                 )
                 v_old_buffer.append(out["v_theta"].detach().cpu())
+                if "nft_video_noise" in out:
+                    video_noise_buffer.append(out["nft_video_noise"].detach().cpu())
 
         if cleanup_rollout_model:
             del ref_model
@@ -401,6 +405,10 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
             if training_was_on_device:
                 self.load_param_and_grad(self.device)
 
+        if video_noise_buffer:
+            forward_inputs["nft_video_noise"] = torch.cat(video_noise_buffer, dim=0).to(
+                xcur.device
+            )
         return torch.cat(v_old_buffer, dim=0).to(xcur.device)
 
     # =======================================================================

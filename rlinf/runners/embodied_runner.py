@@ -275,11 +275,7 @@ class EmbodiedRunner:
 
             with self.timer("step"):
                 with self.timer("sync_weights"):
-                    skip_initial_sync = (
-                        self.cfg.runner.get("skip_initial_weight_sync", False)
-                        and self.global_step == 0
-                    )
-                    if _step % self.weight_sync_interval == 0 and not skip_initial_sync:
+                    if _step % self.weight_sync_interval == 0:
                         self.update_rollout_weights()
                 with self.timer("generate_rollouts"):
                     env_handle: Handle = self.env.interact(
