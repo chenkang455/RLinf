@@ -1,0 +1,186 @@
+defaults:
+  - env/libero_spatial@env.train
+  - env/libero_spatial@env.eval
+  - model/dreamzero@actor.model
+  - training_backend/fsdp@actor.fsdp_config
+  - override hydra/job_logging: stdout
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  searchpath:
+    - file://${oc.env:EMBODIED_PATH}/config/
+
+cluster:
+  num_nodes: 1
+  component_placement:
+    rollout,env: all
+    actor: all
+
+runner:
+  task_type: embodied
+  logger:
+    log_path: "../results"
+    project_name: rlinf
+    experiment_name: "libero_spatial_0_nft_dreamzero"
+    logger_backends: ["tensorboard"] # wandb, swanlab
+
+  max_epochs: 30
+  max_steps: -1
+
+  only_eval: False
+  val_check_interval: -1
+  save_interval: -1
+  resume_dir: null # Optional: path to a saved checkpoint directory, such as 'checkpoints/global_step_10'. If not None, it will be used to resume training.
+  ckpt_path: null  # Optional: path to a .pt checkpoint. If not None, it will be loaded after the model is instantiated (for evaluation).
+
+algorithm:
+  group_size: 8
+  reward_coef: 1.0
+  rollout_epoch: 1
+  eval_rollout_epoch: 1
+
+  reward_type: chunk_level
+  logprob_type: chunk_level
+
+  update_epoch: 1
+  adv_type: grpo
+  loss_type: embodied_nft
+  filter_rewards: True
+  rewards_lower_bound: 0.1
+  rewards_upper_bound: 0.9
+
+  # NFT-specific (locked to on-policy + x0 + resample)
+  nft_loss_form: mse               # dpo | mse
+  nft_beta: 1.0
+  adv_clip_max: 0.5
+  dpo_beta: 1.0
+  max_drift: 0.3
+  nft_weight_mode: auto
+  nft_weight_scale: [1.0, 0.2]
+  nft_target_space: x0             # locked
+  nft_xcur_source: resample        # locked (forces recompute_v=True inside worker)
+  nft_tau: 1.0                     # locked: on-policy, no shadow state_dict
+  recompute_v: True
+  nft_sum_type: action_level
+
+  # required by rollout worker
+  sampling_params:
+    do_sample: True
+    temperature_train: 1.0
+    temperature_eval: 0.6
+    top_k: 50
+    top_p: 1.0
+    repetition_penalty: 1.0
+    add_BOS: False
+  length_params:
+    max_new_token: null
+    max_length: 1024
+    min_length: 1
+
+env:
+  group_name: "EnvGroup"
+
+  train:
+    task_id_filter: [0]
+    group_size: ${algorithm.group_size}
+    total_num_envs: 64
+    max_episode_steps: 256
+    max_steps_per_rollout_epoch: 256
+    collect_chunk_obs: True
+    chunk_obs_stride: 2
+    video_cfg:
+      save_video: False
+      video_base_dir: ${runner.logger.log_path}/video/train
+  eval:
+    task_id_filter: [0]
+    total_num_envs: 8
+    auto_reset: True
+    ignore_terminations: True
+    max_episode_steps: 240
+    max_steps_per_rollout_epoch: 240
+    group_size: 1
+    use_fixed_reset_state_ids: True
+    is_eval: True
+    video_cfg:
+      save_video: False
+      video_base_dir: ${runner.logger.log_path}/video/eval
+
+rollout:
+  group_name: "RolloutGroup"
+  generation_backend: "huggingface"
+  recompute_logprobs: False
+  enable_offload: True
+  pipeline_stage_num: 1
+  sync_trainable_only: True
+
+  model:
+    model_path: ${actor.model.model_path}
+    precision: ${actor.model.precision}
+    # LoRA must be symmetric between actor and rollout so peft-wrapped
+    # parameter keys line up during sync_model_to_rollout.
+    use_lora: ${actor.model.use_lora}
+    action_dim: ${actor.model.action_dim}
+    num_action_chunks: ${actor.model.num_action_chunks}
+    embodiment_tag: ${actor.model.embodiment_tag}
+    tokenizer_path: ${actor.model.tokenizer_path}
+
+actor:
+  group_name: "ActorGroup"
+  training_backend: "fsdp"
+  micro_batch_size: 8
+  global_batch_size: 512
+  seed: 42
+  enable_offload: True
+
+  model:
+    model_type: "dreamzero"
+    model_path: /mnt/project_rlinf/chenkang/RLinf_codes/RLinf_dreamzero/third_party/dreamzero_5b_huining/checkpoints/dreamzero_libero_wan22_full_finetune_1chunk_decouple/checkpoint-12000
+
+    action_dim: 7
+    num_action_chunks: 16
+    embodiment_tag: "libero_sim"
+    is_lora: false                # TODO: lora in rlinf, disable here
+    use_lora: True                 # toggle LoRA injection in get_model
+
+    tokenizer_path: /mnt/project_rlinf_hs/yuanhuining/models/umt5-xxl
+    max_seq_len: 512
+    add_value_head: False
+    precision: bf16
+
+    action_head_cfg_pre:
+      decouple_inference_noise: False
+      video_inference_final_noise: 0.8
+    action_head_cfg_post:
+      num_inference_steps: 1
+      eval_video_mode: "frozen_noise"   # "normal" | "clean" | "clean_noised" | "zero" | "random" | "frozen_noise"
+      eval_action_sampler: "euler" # "unipc" | "euler"
+
+  optim:
+    lr: 5.0e-6                     # LoRA-friendly lr
+    value_lr: 1.0e-4
+    adam_beta1: 0.9
+    adam_beta2: 0.95
+    adam_eps: 1.0e-08
+    weight_decay: 0.0              # LoRA: skip weight decay on adapters
+    clip_grad: 1.0
+    critic_warmup_steps: 0
+
+  fsdp_config:
+    strategy: "fsdp2"
+    sharding_strategy: "full_shard"
+    use_orig_params: True
+    gradient_checkpointing: True
+    limit_all_gathers: True
+    reshard_after_forward: True
+    mixed_precision:
+      param_dtype: ${actor.model.precision}
+      reduce_dtype: ${actor.model.precision}
+      buffer_dtype: ${actor.model.precision}
+
+reward:
+  use_reward_model: False
+
+critic:
+  use_critic_model: False
