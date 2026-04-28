@@ -451,6 +451,7 @@
    mlp
    sac_flow
    sft_openpi
+   sft_dreamzero
    sft_vlm
    dsrl
    dagger
