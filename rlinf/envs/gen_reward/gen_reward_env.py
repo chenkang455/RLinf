@@ -61,7 +61,8 @@ class GenRewardEnv(gym.Env):
         self._current_obs: dict[str, Any] | None = None
 
     def update_reset_state_ids(self):
-        return None
+        if self.is_eval:
+            self._cursor = 0
 
     def _next_group_indices(self) -> np.ndarray:
         if self.is_eval:
