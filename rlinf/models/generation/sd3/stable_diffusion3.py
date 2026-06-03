@@ -99,9 +99,17 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
     def _move_pipeline(self, device: torch.device | str | None):
         if self.pipeline is None or device is None:
             return
+        if isinstance(device, int):
+            device = torch.device(f"cuda:{device}")
+        else:
+            device = torch.device(device)
         if self.pipeline.transformer is not self.transformer:
             self.pipeline.transformer = self.transformer
-        self.pipeline.to(torch.device(device))
+        self.pipeline.vae.to(device=device)
+        self.pipeline.text_encoder.to(device=device)
+        self.pipeline.text_encoder_2.to(device=device)
+        self.pipeline.text_encoder_3.to(device=device)
+        self.pipeline.transformer.to(device=device)
 
     def to(self, *args, **kwargs):
         module = super().to(*args, **kwargs)
@@ -160,11 +168,15 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
             )
 
         logprobs = []
+        model_dtype = next(self.transformer.parameters()).dtype
         for step_index in train_timesteps:
             step_index = int(step_index)
             latents = forward_inputs["latents"][:, step_index]
             timesteps = forward_inputs["timesteps"][:, step_index]
-            model_input = torch.cat([latents] * 2) if self.config.cfg else latents
+            model_latents = latents.to(dtype=model_dtype)
+            model_input = (
+                torch.cat([model_latents] * 2) if self.config.cfg else model_latents
+            )
             timestep = torch.cat([timesteps] * 2) if self.config.cfg else timesteps
             noise_pred = self.transformer(
                 hidden_states=model_input,
@@ -218,6 +230,7 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         self._ensure_pipeline()
         device = next(self.transformer.parameters()).device
+        self._move_pipeline(device)
         prompt_embeds, _, pooled_prompt_embeds, _ = self.pipeline.encode_prompt(
             prompt=_as_list(prompts),
             prompt_2=None,

@@ -110,12 +110,14 @@ def denoise_with_logprob(
     ).float()
     timesteps, num_steps = retrieve_timesteps(pipeline.scheduler, num_steps, prompt_embeds.device)
     pipeline._num_timesteps = len(timesteps)
+    model_dtype = next(transformer.parameters()).dtype
 
     latent_chain = [latents]
     log_probs = []
     with pipeline.progress_bar(total=num_steps) as progress_bar:
         for t in timesteps:
-            model_input = torch.cat([latents] * 2) if cfg_enabled else latents
+            model_latents = latents.to(dtype=model_dtype)
+            model_input = torch.cat([model_latents] * 2) if cfg_enabled else model_latents
             timestep = t.expand(model_input.shape[0])
             noise_pred = transformer(
                 hidden_states=model_input,

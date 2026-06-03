@@ -23,6 +23,15 @@ from rlinf.models.generation.sd3.stable_diffusion3 import (
 )
 
 
+def _dtype_from_precision(precision: str):
+    precision = str(precision).lower()
+    if precision in {"fp16", "float16", "half"}:
+        return torch.float16
+    if precision in {"bf16", "bfloat16"}:
+        return torch.bfloat16
+    return torch.float32
+
+
 def get_model(cfg: DictConfig, torch_dtype=None):
     model_config = StableDiffusion3Config(model_path=str(cfg.model_path))
     model_config.update_from_dict(
@@ -31,9 +40,13 @@ def get_model(cfg: DictConfig, torch_dtype=None):
     if not model_config.model_path:
         raise ValueError("actor.model.model_path must point to an SD3 checkpoint.")
 
+    inference_dtype = torch_dtype or _dtype_from_precision(cfg.get("precision", "fp32"))
     pipeline = None
     if model_config.load_pipeline_on_init:
-        pipeline = StableDiffusion3Pipeline.from_pretrained(model_config.model_path)
+        pipeline = StableDiffusion3Pipeline.from_pretrained(
+            model_config.model_path,
+            torch_dtype=inference_dtype,
+        )
         pipeline.safety_checker = None
         pipeline.set_progress_bar_config(disable=True)
 
@@ -64,11 +77,11 @@ def get_model(cfg: DictConfig, torch_dtype=None):
                     lora_config,
                 )
 
-        inference_dtype = torch_dtype or torch.float32
         pipeline.vae.to(dtype=torch.float32)
         pipeline.text_encoder.to(dtype=inference_dtype)
         pipeline.text_encoder_2.to(dtype=inference_dtype)
         pipeline.text_encoder_3.to(dtype=inference_dtype)
+        pipeline.transformer.to(dtype=inference_dtype)
 
     return StableDiffusion3(model_config, pipeline=pipeline)
 
