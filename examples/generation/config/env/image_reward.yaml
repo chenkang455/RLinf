@@ -1,0 +1,26 @@
+env_type: "gen_reward"
+seed: 42
+total_num_envs: 24
+group_size: 3
+auto_reset: False
+ignore_terminations: False
+max_episode_steps: 1
+max_steps_per_rollout_epoch: 1
+use_fixed_reset_state_ids: False
+use_ordered_reset_state_ids: False
+is_eval: False
+
+video_cfg:
+  save_video: False
+  info_on_video: False
+  video_base_dir: ${runner.logger.log_path}/video/image_reward
+
+dataset:
+  path: "/mnt/public2/chenkang/wam_rl/flow_grpo/dataset/ocr"
+  split: "train"
+
+reward:
+  type: "ocr"
+  key: "avg"
+  use_gpu: False
+  lang: "en"

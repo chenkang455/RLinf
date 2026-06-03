@@ -16,7 +16,12 @@ from typing import Callable, Optional
 
 from omegaconf import DictConfig
 
-from rlinf.config import EMBODIED_MODEL, SupportedModel, torch_dtype_from_precision
+from rlinf.config import (
+    EMBODIED_MODEL,
+    GENERATION_MODEL,
+    SupportedModel,
+    torch_dtype_from_precision,
+)
 from rlinf.scheduler import Worker
 
 ModelBuilder = Callable[[DictConfig, Optional[object]], object]
@@ -41,8 +46,11 @@ def register_model(
         )
     _MODEL_REGISTRY[model_type] = model_builder
     SupportedModel.register(model_type, force=force)
+    model_kind = SupportedModel(model_type)
     if category == "embodied":
-        EMBODIED_MODEL.add(SupportedModel(model_type))
+        EMBODIED_MODEL.add(model_kind)
+    elif category == "generation":
+        GENERATION_MODEL.add(model_kind)
 
 
 def _register_builtin_models():
@@ -206,7 +214,7 @@ def _register_builtin_models():
         force=True,
     )
     register_model(
-        "sd3",
+        SupportedModel.SD3.value,
         _build_sd3,
         category="generation",
         force=True,

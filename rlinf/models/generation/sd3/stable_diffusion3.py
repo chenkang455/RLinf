@@ -42,13 +42,15 @@ class StableDiffusion3Config:
     model_path: str = ""
     resolution: int = 512
     num_steps: int = 10
+    eval_num_steps: int = 40
     timestep_fraction: float = 0.99
     guidance_scale: float = 4.5
+    eval_guidance_scale: float = 4.5
     cfg: bool = True
     noise_level: float = 0.7
+    eval_noise_level: float = 0.0
     max_sequence_length: int = 128
     output_type: str = "pt"
-    return_logprobs_last_dim: bool = True
     use_lora: bool = True
     lora_rank: int = 32
     lora_alpha: int = 64
@@ -73,7 +75,9 @@ class StableDiffusion3Config:
             return
         unknown_fields = sorted(set(config_dict) - set(self.__dataclass_fields__))
         if unknown_fields:
-            raise ValueError(f"Unknown StableDiffusion3 config fields: {unknown_fields}")
+            raise ValueError(
+                f"Unknown StableDiffusion3 config fields: {unknown_fields}"
+            )
         for key, value in config_dict.items():
             setattr(self, key, value)
 
@@ -129,7 +133,9 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
         if kwargs.get("compute_values", False):
             raise ValueError("StableDiffusion3 has no value head; use adv_type=grpo.")
         if kwargs.get("compute_entropy", False):
-            raise ValueError("StableDiffusion3 does not return entropy; set entropy_bonus=0.")
+            raise ValueError(
+                "StableDiffusion3 does not return entropy; set entropy_bonus=0."
+            )
 
         train_timesteps = kwargs.get("train_timesteps", None)
         if train_timesteps is None:
@@ -154,8 +160,6 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
             )
 
         logprobs = []
-        means = []
-        stds = []
         for step_index in train_timesteps:
             step_index = int(step_index)
             latents = forward_inputs["latents"][:, step_index]
@@ -175,7 +179,7 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
                     noise_pred_text - noise_pred_uncond
                 )
 
-            _, logprob, mean, std = sde_step_with_logprob(
+            _, logprob, _, _ = sde_step_with_logprob(
                 self.pipeline.scheduler,
                 noise_pred,
                 timesteps,
@@ -184,15 +188,8 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
                 prev_sample=forward_inputs["next_latents"][:, step_index],
             )
             logprobs.append(logprob)
-            means.append(mean)
-            stds.append(std)
 
-        logprobs = self._format_logprobs(torch.stack(logprobs, dim=1))
-        result = {"logprobs": logprobs, "values": None}
-        if kwargs.get("return_aux", False):
-            result["prev_sample_means"] = torch.stack(means, dim=1)
-            result["std_devs"] = torch.stack(stds, dim=1)
-        return result
+        return {"logprobs": torch.stack(logprobs, dim=1), "values": None}
 
     def obs_processor(self, env_obs: Any) -> list[str]:
         if isinstance(env_obs, str):
@@ -200,7 +197,9 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
         if isinstance(env_obs, Sequence) and not isinstance(env_obs, Mapping):
             return [str(prompt) for prompt in env_obs]
         if not isinstance(env_obs, Mapping):
-            raise TypeError(f"Unsupported StableDiffusion3 env_obs type: {type(env_obs)!r}")
+            raise TypeError(
+                f"Unsupported StableDiffusion3 env_obs type: {type(env_obs)!r}"
+            )
 
         for key in ("prompts", "prompt", "texts", "text", "task_descriptions"):
             if key in env_obs:
@@ -248,6 +247,13 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
                 negative_prompts
             )
 
+        num_steps = self.config.eval_num_steps if mode == "eval" else self.config.num_steps
+        guidance_scale = (
+            self.config.eval_guidance_scale if mode == "eval" else self.config.guidance_scale
+        )
+        noise_level = (
+            self.config.eval_noise_level if mode == "eval" else self.config.noise_level
+        )
         images, latents_chain, log_probs = denoise_with_logprob(
             pipeline=self.pipeline,
             transformer=self.transformer,
@@ -256,9 +262,9 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
             negative_prompt_embeds=negative_prompt_embeds,
             negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
             cfg_enabled=self.config.cfg,
-            guidance_scale=self.config.guidance_scale,
-            noise_level=self.config.noise_level,
-            num_steps=self.config.num_steps,
+            guidance_scale=guidance_scale,
+            noise_level=noise_level,
+            num_steps=num_steps,
             resolution=self.config.resolution,
             output_type=self.config.output_type,
             generator=kwargs.get("generator"),
@@ -274,6 +280,8 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
             max(1, int(self.config.num_steps * self.config.timestep_fraction)),
             old_logprobs.shape[1],
         )
+        if mode == "eval":
+            num_train_timesteps = old_logprobs.shape[1]
 
         forward_inputs = {
             "latents": full_latents[:, :num_train_timesteps].detach(),
@@ -290,24 +298,19 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
 
         prev_logprobs = old_logprobs[:, :num_train_timesteps].detach()
         result = {
-            "prev_logprobs": self._format_logprobs(prev_logprobs),
+            "prev_logprobs": prev_logprobs,
             "prev_values": None,
             "forward_inputs": forward_inputs,
-            "full_latents": full_latents.detach(),
-            "raw_prev_logprobs": old_logprobs.detach(),
         }
         return images, result
-
-    def _format_logprobs(self, logprobs: torch.Tensor) -> torch.Tensor:
-        if self.config.return_logprobs_last_dim and logprobs.ndim == 2:
-            return logprobs.unsqueeze(-1)
-        return logprobs
 
     def disable_adapter(self):
         transformer = self.transformer
         if hasattr(transformer, "disable_adapter"):
             return transformer.disable_adapter()
-        if hasattr(transformer, "module") and hasattr(transformer.module, "disable_adapter"):
+        if hasattr(transformer, "module") and hasattr(
+            transformer.module, "disable_adapter"
+        ):
             return transformer.module.disable_adapter()
         return nullcontext()
 

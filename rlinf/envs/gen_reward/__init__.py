@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from rlinf.envs.gen_reward.datasets import PromptDataset
 from rlinf.envs.gen_reward.gen_reward_env import GenRewardEnv
 
-__all__ = ["GenRewardEnv"]
+__all__ = ["GenRewardEnv", "PromptDataset"]
