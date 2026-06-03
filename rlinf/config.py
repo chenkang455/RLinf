@@ -99,10 +99,13 @@ SupportedModel.LINGBOTVLA = SupportedModel.register("lingbotvla", force=True)
 SupportedModel.RESNET_REWARD = SupportedModel.register("resnet", force=True)
 SupportedModel.CFG_MODEL = SupportedModel.register("cfg_model", force=True)
 SupportedModel.VALUE_MODEL = SupportedModel.register("value_model", force=True)
+SupportedModel.SD3 = SupportedModel.register("sd3", force=True)
 
 SupportedModel.QWEN2_5_VL_SFT = SupportedModel.register("qwen2.5_vl", force=True)
 SupportedModel.QWEN3_VL_SFT = SupportedModel.register("qwen3_vl", force=True)
 SupportedModel.QWEN3_VL_MOE_SFT = SupportedModel.register("qwen3_vl_moe", force=True)
+
+GENERATION_MODEL = {SupportedModel.SD3}
 
 EMBODIED_MODEL = set(
     {
@@ -807,9 +810,10 @@ def validate_megatron_cfg(cfg: DictConfig) -> DictConfig:
 
 def validate_embodied_cfg(cfg):
     model_type = SupportedModel(cfg.actor.model.model_type)
-    assert model_type in EMBODIED_MODEL, (
-        f"Model type: '{cfg.actor.model.model_type}' is not an embodied model. "
-        f"Supported embodied models: {sorted([x.value for x in EMBODIED_MODEL])}."
+    assert model_type in EMBODIED_MODEL or model_type in GENERATION_MODEL, (
+        f"Model type: '{cfg.actor.model.model_type}' is not supported by the embodied runner. "
+        f"Supported embodied models: {sorted([x.value for x in EMBODIED_MODEL])}; "
+        f"supported generation models: {sorted([x.value for x in GENERATION_MODEL])}."
     )
 
     # NOTE: Currently we only support actor_critic as PPO algorithm loss, and only support value_head as critic model.

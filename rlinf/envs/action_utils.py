@@ -291,6 +291,8 @@ def prepare_actions(
             raw_chunk_actions=raw_chunk_actions,
             model_type=model_type,
         )
+    elif env_type == SupportedEnvType.GEN_REWARD:
+        chunk_actions = raw_chunk_actions
     else:
         chunk_actions = raw_chunk_actions
 
