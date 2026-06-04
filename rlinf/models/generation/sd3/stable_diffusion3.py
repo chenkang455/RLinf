@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from contextlib import nullcontext
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
@@ -27,14 +26,10 @@ from diffusers.pipelines.stable_diffusion_3.pipeline_stable_diffusion_3 import (
 from rlinf.models.embodiment.base_policy import BasePolicy, ForwardType
 from rlinf.models.generation.sd3.utils import (
     denoise_with_logprob,
+    move_text_encoders,
+    prompt_list,
     sde_step_with_logprob,
 )
-
-
-def _as_list(value: str | Sequence[str]) -> list[str]:
-    if isinstance(value, str):
-        return [value]
-    return list(value)
 
 
 @dataclass
@@ -68,7 +63,7 @@ class StableDiffusion3Config:
             "attn.to_v",
         ]
     )
-    load_pipeline_on_init: bool = True
+    offload_auxiliary_modules: bool = True
 
     def update_from_dict(self, config_dict: Mapping[str, Any] | None):
         if not config_dict:
@@ -85,48 +80,18 @@ class StableDiffusion3Config:
 class StableDiffusion3(torch.nn.Module, BasePolicy):
     """Stable Diffusion 3 policy model for image rollout and logprob updates."""
 
-    def __init__(
-        self,
-        config: StableDiffusion3Config,
-        pipeline: Any | None = None,
-    ):
+    def __init__(self, config: StableDiffusion3Config, pipeline: Any):
         super().__init__()
         self.config = config
         self.model_path = str(config.model_path)
         self.pipeline = pipeline
-        self.transformer = None if pipeline is None else pipeline.transformer
+        self.transformer = pipeline.transformer
 
-    def _move_pipeline(self, device: torch.device | str | None):
-        if self.pipeline is None or device is None:
-            return
-        if isinstance(device, int):
-            device = torch.device(f"cuda:{device}")
-        else:
-            device = torch.device(device)
-        if self.pipeline.transformer is not self.transformer:
-            self.pipeline.transformer = self.transformer
-        self.pipeline.vae.to(device=device)
-        self.pipeline.text_encoder.to(device=device)
-        self.pipeline.text_encoder_2.to(device=device)
-        self.pipeline.text_encoder_3.to(device=device)
-        self.pipeline.transformer.to(device=device)
-
-    def to(self, *args, **kwargs):
-        module = super().to(*args, **kwargs)
-        device = kwargs.get("device")
-        if device is None and args and isinstance(args[0], (str, torch.device)):
-            device = args[0]
-        self._move_pipeline(device)
-        return module
-
-    def _ensure_pipeline(self):
-        if self.pipeline is None:
-            raise RuntimeError(
-                "StableDiffusion3 pipeline is not loaded. "
-                "Build it through get_model with sd3.load_pipeline_on_init=True."
-            )
-        if self.pipeline.transformer is not self.transformer:
-            self.pipeline.transformer = self.transformer
+    @property
+    def _no_split_modules(self) -> list[str]:
+        return list(
+            getattr(self.transformer, "_no_split_modules", ["JointTransformerBlock"])
+        )
 
     def forward(self, forward_type=ForwardType.DEFAULT, **kwargs):
         if forward_type == ForwardType.DEFAULT:
@@ -138,18 +103,6 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
         forward_inputs: dict[str, torch.Tensor],
         **kwargs,
     ) -> dict[str, Any]:
-        if kwargs.get("compute_values", False):
-            raise ValueError("StableDiffusion3 has no value head; use adv_type=grpo.")
-        if kwargs.get("compute_entropy", False):
-            raise ValueError(
-                "StableDiffusion3 does not return entropy; set entropy_bonus=0."
-            )
-
-        train_timesteps = kwargs.get("train_timesteps", None)
-        if train_timesteps is None:
-            train_timesteps = range(forward_inputs["latents"].shape[1])
-
-        self._ensure_pipeline()
         prompt_embeds = forward_inputs["prompt_embeds"]
         pooled_prompt_embeds = forward_inputs["pooled_prompt_embeds"]
         retrieve_timesteps(
@@ -169,8 +122,8 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
 
         logprobs = []
         model_dtype = next(self.transformer.parameters()).dtype
-        for step_index in train_timesteps:
-            step_index = int(step_index)
+        num_train_timesteps = forward_inputs["latents"].shape[1]
+        for step_index in range(num_train_timesteps):
             latents = forward_inputs["latents"][:, step_index]
             timesteps = forward_inputs["timesteps"][:, step_index]
             model_latents = latents.to(dtype=model_dtype)
@@ -204,22 +157,13 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
         return {"logprobs": torch.stack(logprobs, dim=1), "values": None}
 
     def obs_processor(self, env_obs: Any) -> list[str]:
-        if isinstance(env_obs, str):
-            return [env_obs]
-        if isinstance(env_obs, Sequence) and not isinstance(env_obs, Mapping):
+        if isinstance(env_obs, Mapping):
+            for key in ("prompts", "prompt", "texts", "text", "task_descriptions"):
+                if key in env_obs:
+                    return prompt_list(env_obs[key])
+        if isinstance(env_obs, Sequence) and not isinstance(env_obs, str):
             return [str(prompt) for prompt in env_obs]
-        if not isinstance(env_obs, Mapping):
-            raise TypeError(
-                f"Unsupported StableDiffusion3 env_obs type: {type(env_obs)!r}"
-            )
-
-        for key in ("prompts", "prompt", "texts", "text", "task_descriptions"):
-            if key in env_obs:
-                return _as_list(env_obs[key])
-        raise KeyError(
-            "StableDiffusion3 env_obs must contain one of: prompts, prompt, "
-            "texts, text, task_descriptions."
-        )
+        return [str(env_obs)]
 
     @torch.no_grad()
     def encode_prompts(
@@ -228,11 +172,10 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
         *,
         num_images_per_prompt: int = 1,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        self._ensure_pipeline()
         device = next(self.transformer.parameters()).device
-        self._move_pipeline(device)
+        move_text_encoders(self.pipeline, device=device)
         prompt_embeds, _, pooled_prompt_embeds, _ = self.pipeline.encode_prompt(
-            prompt=_as_list(prompts),
+            prompt=prompt_list(prompts),
             prompt_2=None,
             prompt_3=None,
             do_classifier_free_guidance=False,
@@ -250,7 +193,6 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
         compute_values=False,
         **kwargs,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
-        self._ensure_pipeline()
         prompts = self.obs_processor(env_obs)
         prompt_embeds, pooled_prompt_embeds = self.encode_prompts(prompts)
         negative_prompt_embeds, negative_pooled_prompt_embeds = None, None
@@ -259,7 +201,11 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
             negative_prompt_embeds, negative_pooled_prompt_embeds = self.encode_prompts(
                 negative_prompts
             )
+        if self.config.offload_auxiliary_modules:
+            move_text_encoders(self.pipeline, device="cpu")
+            torch.cuda.empty_cache()
 
+        is_eval = mode == "eval"
         num_steps = self.config.eval_num_steps if mode == "eval" else self.config.num_steps
         guidance_scale = (
             self.config.eval_guidance_scale if mode == "eval" else self.config.guidance_scale
@@ -280,9 +226,14 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
             num_steps=num_steps,
             resolution=self.config.resolution,
             output_type=self.config.output_type,
+            offload_vae=self.config.offload_auxiliary_modules,
+            return_trajectory=not is_eval,
             generator=kwargs.get("generator"),
             latents=kwargs.get("latents"),
         )
+        if is_eval:
+            return images, {"prev_values": None}
+
         timesteps = self.pipeline.scheduler.timesteps[: len(log_probs)].repeat(
             log_probs[0].shape[0],
             1,
@@ -293,8 +244,6 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
             max(1, int(self.config.num_steps * self.config.timestep_fraction)),
             old_logprobs.shape[1],
         )
-        if mode == "eval":
-            num_train_timesteps = old_logprobs.shape[1]
 
         forward_inputs = {
             "latents": full_latents[:, :num_train_timesteps].detach(),
@@ -309,41 +258,22 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
                 negative_pooled_prompt_embeds.detach()
             )
 
-        prev_logprobs = old_logprobs[:, :num_train_timesteps].detach()
-        result = {
-            "prev_logprobs": prev_logprobs,
+        return images, {
+            "prev_logprobs": old_logprobs[:, :num_train_timesteps].detach(),
             "prev_values": None,
             "forward_inputs": forward_inputs,
         }
-        return images, result
-
-    def disable_adapter(self):
-        transformer = self.transformer
-        if hasattr(transformer, "disable_adapter"):
-            return transformer.disable_adapter()
-        if hasattr(transformer, "module") and hasattr(
-            transformer.module, "disable_adapter"
-        ):
-            return transformer.module.disable_adapter()
-        return nullcontext()
 
     def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
-        if self.transformer is None:
-            return
         enable_fn = getattr(self.transformer, "gradient_checkpointing_enable", None)
         if enable_fn is None:
             return
         if gradient_checkpointing_kwargs is None:
             enable_fn()
-            return
-        try:
+        else:
             enable_fn(gradient_checkpointing_kwargs=gradient_checkpointing_kwargs)
-        except TypeError:
-            enable_fn()
 
     def gradient_checkpointing_disable(self):
-        if self.transformer is None:
-            return
         disable_fn = getattr(self.transformer, "gradient_checkpointing_disable", None)
         if disable_fn is not None:
             disable_fn()

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from typing import Any
 
 import torch
@@ -24,17 +25,47 @@ from diffusers.pipelines.stable_diffusion_3.pipeline_stable_diffusion_3 import (
 from diffusers.utils.torch_utils import randn_tensor
 
 
-def _scheduler_step_indices(scheduler, timestep: torch.Tensor) -> list[int]:
-    scheduler_timesteps = scheduler.timesteps
-    if scheduler_timesteps.numel() == 0:
-        raise ValueError("Scheduler timesteps are empty. Call retrieve_timesteps first.")
-    scheduler_timesteps = scheduler_timesteps.to(
-        device=timestep.device,
-        dtype=torch.float32,
-    )
-    timestep = timestep.reshape(-1).to(dtype=torch.float32)
-    distances = (timestep[:, None] - scheduler_timesteps[None, :]).abs()
-    return distances.argmin(dim=1).tolist()
+def prompt_list(value: str | Sequence[str]) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    return [str(item) for item in value]
+
+
+def move_text_encoders(
+    pipeline: Any,
+    *,
+    device: torch.device | str | None = None,
+    dtype: torch.dtype | None = None,
+):
+    kwargs = {}
+    if device is not None:
+        kwargs["device"] = device
+    if dtype is not None:
+        kwargs["dtype"] = dtype
+
+    pipeline.text_encoder.to(**kwargs)
+    pipeline.text_encoder_2.to(**kwargs)
+    pipeline.text_encoder_3.to(**kwargs)
+
+
+def configure_pipeline_trainability(
+    pipeline: Any,
+    *,
+    train_transformer: bool,
+):
+    pipeline.set_progress_bar_config(disable=True)
+
+    pipeline.vae.requires_grad_(False)
+    pipeline.text_encoder.requires_grad_(False)
+    pipeline.text_encoder_2.requires_grad_(False)
+    pipeline.text_encoder_3.requires_grad_(False)
+    pipeline.transformer.requires_grad_(train_transformer)
+
+
+def move_pipeline_modules(pipeline: Any, *, inference_dtype: torch.dtype):
+    pipeline.vae.to(dtype=torch.float32)
+    move_text_encoders(pipeline, dtype=inference_dtype)
+    pipeline.transformer.to(dtype=inference_dtype)
 
 
 def sde_step_with_logprob(
@@ -45,16 +76,27 @@ def sde_step_with_logprob(
     *,
     noise_level: float,
     prev_sample: torch.Tensor | None = None,
+    compute_logprob: bool = True,
 ):
     model_output = model_output.float()
     sample = sample.float()
     prev_sample = None if prev_sample is None else prev_sample.float()
 
-    step_index = _scheduler_step_indices(scheduler, timestep)
-    prev_step_index = [idx + 1 for idx in step_index]
+    scheduler_timesteps = scheduler.timesteps.to(
+        device=timestep.device,
+        dtype=torch.float32,
+    )
+    if scheduler_timesteps.numel() == 0:
+        raise ValueError("Scheduler timesteps are empty. Call retrieve_timesteps first.")
+
+    timestep = timestep.reshape(-1).to(dtype=torch.float32)
+    step_index = (timestep[:, None] - scheduler_timesteps[None, :]).abs().argmin(dim=1)
+    prev_step_index = step_index + 1
+
     sigma = scheduler.sigmas[step_index].view(-1, *([1] * (sample.ndim - 1)))
     sigma_prev = scheduler.sigmas[prev_step_index].view(
-        -1, *([1] * (sample.ndim - 1))
+        -1,
+        *([1] * (sample.ndim - 1)),
     )
     sigma_max = scheduler.sigmas[1].item()
     dt = sigma_prev - sigma
@@ -72,6 +114,9 @@ def sde_step_with_logprob(
             dtype=model_output.dtype,
         )
         prev_sample = mean + diffusion_std * noise
+
+    if not compute_logprob:
+        return prev_sample, None, mean, std
 
     log_prob = (
         -((prev_sample.detach() - mean) ** 2) / (2 * diffusion_std**2)
@@ -97,6 +142,8 @@ def denoise_with_logprob(
     num_steps: int,
     resolution: int,
     output_type: str,
+    offload_vae: bool = False,
+    return_trajectory: bool = True,
     generator=None,
     latents=None,
 ):
@@ -108,7 +155,8 @@ def denoise_with_logprob(
     if cfg_enabled:
         model_prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
         model_pooled_embeds = torch.cat(
-            [negative_pooled_prompt_embeds, pooled_prompt_embeds], dim=0
+            [negative_pooled_prompt_embeds, pooled_prompt_embeds],
+            dim=0,
         )
 
     latents = pipeline.prepare_latents(
@@ -121,12 +169,16 @@ def denoise_with_logprob(
         generator,
         latents,
     ).float()
-    timesteps, num_steps = retrieve_timesteps(pipeline.scheduler, num_steps, prompt_embeds.device)
+    timesteps, num_steps = retrieve_timesteps(
+        pipeline.scheduler,
+        num_steps,
+        prompt_embeds.device,
+    )
     pipeline._num_timesteps = len(timesteps)
     model_dtype = next(transformer.parameters()).dtype
 
-    latent_chain = [latents]
-    log_probs = []
+    latent_chain = [latents] if return_trajectory else None
+    log_probs = [] if return_trajectory else None
     with pipeline.progress_bar(total=num_steps) as progress_bar:
         for t in timesteps:
             model_latents = latents.to(dtype=model_dtype)
@@ -144,20 +196,31 @@ def denoise_with_logprob(
                 noise_pred = noise_pred_uncond + guidance_scale * (
                     noise_pred_text - noise_pred_uncond
                 )
+
             latents, log_prob, _, _ = sde_step_with_logprob(
                 pipeline.scheduler,
                 noise_pred,
                 t.unsqueeze(0),
                 latents,
                 noise_level=noise_level,
+                compute_logprob=return_trajectory,
             )
-            latent_chain.append(latents)
-            log_probs.append(log_prob)
+            if return_trajectory:
+                latent_chain.append(latents)
+                log_probs.append(log_prob)
             progress_bar.update()
 
-    latents = (latents / pipeline.vae.config.scaling_factor) + pipeline.vae.config.shift_factor
+    pipeline.vae.to(device=latents.device)
+    latents = (
+        latents / pipeline.vae.config.scaling_factor
+    ) + pipeline.vae.config.shift_factor
     latents = latents.to(dtype=pipeline.vae.dtype)
     images = pipeline.vae.decode(latents, return_dict=False)[0]
     images = pipeline.image_processor.postprocess(images, output_type=output_type)
     pipeline.maybe_free_model_hooks()
+
+    if offload_vae:
+        pipeline.vae.to(device="cpu")
+        torch.cuda.empty_cache()
+
     return images, latent_chain, log_probs

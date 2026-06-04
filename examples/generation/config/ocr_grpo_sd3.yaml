@@ -29,7 +29,7 @@ runner:
   max_epochs: 100000
   max_steps: -1
   only_eval: False
-  val_check_interval: 60
+  val_check_interval: -1
   save_interval: -1
   resume_dir: null
   ckpt_path: null
@@ -114,7 +114,7 @@ rollout:
 actor:
   group_name: "ActorGroup"
   training_backend: "fsdp"
-  micro_batch_size: 9
+  micro_batch_size: 1
   global_batch_size: 576
   seed: 42
   enable_offload: False
@@ -135,6 +135,7 @@ actor:
       use_lora: True
       lora_rank: 32
       lora_alpha: 64
+      offload_auxiliary_modules: True
 
   optim:
     lr: 3.0e-4
@@ -147,11 +148,13 @@ actor:
     critic_warmup_steps: 0
 
   fsdp_config:
-    strategy: "fsdp"
-    sharding_strategy: "no_shard"
+    strategy: "fsdp2"
+    sharding_strategy: "full_shard"
     use_orig_params: True
     gradient_checkpointing: True
     gradient_checkpointing_use_reentrant: False
+    enable_gradient_accumulation: True
+    reshard_after_forward: True
     mixed_precision:
       param_dtype: ${actor.model.precision}
       reduce_dtype: ${actor.model.precision}

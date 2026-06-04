@@ -22,4 +22,4 @@ sd3:
   lora_rank: 32
   lora_alpha: 64
   lora_path: null
-  load_pipeline_on_init: True
+  offload_auxiliary_modules: True
