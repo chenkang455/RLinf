@@ -46,6 +46,7 @@ class StableDiffusion3Config:
     eval_noise_level: float = 0.0
     max_sequence_length: int = 128
     output_type: str = "pt"
+    rl_mode: Literal["flow-grpo", "nft"] = "flow-grpo"
     use_lora: bool = True
     lora_rank: int = 32
     lora_alpha: int = 64
@@ -96,6 +97,8 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
     def forward(self, forward_type=ForwardType.DEFAULT, **kwargs):
         if forward_type == ForwardType.DEFAULT:
             return self.default_forward(**kwargs)
+        if forward_type == ForwardType.NFT:
+            return self.nft_forward(**kwargs)
         raise NotImplementedError
 
     def default_forward(
@@ -155,6 +158,50 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
             logprobs.append(logprob)
 
         return {"logprobs": torch.stack(logprobs, dim=1), "values": None}
+
+    def nft_forward(
+        self,
+        forward_inputs: dict[str, torch.Tensor],
+        nft_inputs: dict[str, torch.Tensor],
+        **kwargs,
+    ) -> dict[str, Any]:
+        """Predict velocity for explicitly provided NFT noisy latents."""
+        device = next(self.transformer.parameters()).device
+        model_dtype = next(self.transformer.parameters()).dtype
+        x_t = nft_inputs["x_t"].to(device)
+        timesteps = nft_inputs["timesteps"].to(device)
+
+        prompt_embeds = forward_inputs["prompt_embeds"].to(device)
+        pooled_prompt_embeds = forward_inputs["pooled_prompt_embeds"].to(device)
+        model_input = x_t.to(dtype=model_dtype)
+        model_timesteps = timesteps
+        if self.config.cfg:
+            prompt_embeds = torch.cat(
+                [forward_inputs["negative_prompt_embeds"].to(device), prompt_embeds],
+                dim=0,
+            )
+            pooled_prompt_embeds = torch.cat(
+                [
+                    forward_inputs["negative_pooled_prompt_embeds"].to(device),
+                    pooled_prompt_embeds,
+                ],
+                dim=0,
+            )
+            model_input = torch.cat([model_input] * 2)
+            model_timesteps = torch.cat([timesteps] * 2)
+
+        v_theta = self.transformer(
+            hidden_states=model_input,
+            timestep=model_timesteps,
+            encoder_hidden_states=prompt_embeds,
+            pooled_projections=pooled_prompt_embeds,
+            return_dict=False,
+        )[0]
+        if self.config.cfg:
+            v_uncond, v_text = v_theta.chunk(2)
+            v_theta = v_uncond + self.config.guidance_scale * (v_text - v_uncond)
+
+        return {"v_theta": v_theta, "x_t": x_t, "timesteps": timesteps}
 
     def obs_processor(self, env_obs: Any) -> list[str]:
         if isinstance(env_obs, Mapping):
@@ -257,6 +304,8 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
             forward_inputs["negative_pooled_prompt_embeds"] = (
                 negative_pooled_prompt_embeds.detach()
             )
+        if self.config.rl_mode == "nft":
+            forward_inputs["nft_x0"] = full_latents[:, -1].detach()
 
         return images, {
             "prev_logprobs": old_logprobs[:, :num_train_timesteps].detach(),
