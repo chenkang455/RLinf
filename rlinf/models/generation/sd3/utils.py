@@ -48,6 +48,15 @@ def move_text_encoders(
     pipeline.text_encoder_3.to(**kwargs)
 
 
+def move_auxiliary_modules(
+    pipeline: Any,
+    *,
+    device: torch.device | str | None = None,
+):
+    pipeline.vae.to(device=device)
+    move_text_encoders(pipeline, device=device)
+
+
 def configure_pipeline_trainability(
     pipeline: Any,
     *,

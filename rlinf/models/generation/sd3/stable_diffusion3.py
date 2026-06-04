@@ -26,6 +26,7 @@ from diffusers.pipelines.stable_diffusion_3.pipeline_stable_diffusion_3 import (
 from rlinf.models.embodiment.base_policy import BasePolicy, ForwardType
 from rlinf.models.generation.sd3.utils import (
     denoise_with_logprob,
+    move_auxiliary_modules,
     move_text_encoders,
     prompt_list,
     sde_step_with_logprob,
@@ -93,6 +94,13 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
         return list(
             getattr(self.transformer, "_no_split_modules", ["JointTransformerBlock"])
         )
+
+    def to(self, device):
+        module = super().to(device)
+        device = torch.device(device)
+        if device.type == "cpu":
+            move_auxiliary_modules(self.pipeline, device=device)
+        return module
 
     def forward(self, forward_type=ForwardType.DEFAULT, **kwargs):
         if forward_type == ForwardType.DEFAULT:
@@ -175,6 +183,8 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
         pooled_prompt_embeds = forward_inputs["pooled_prompt_embeds"].to(device)
         model_input = x_t.to(dtype=model_dtype)
         model_timesteps = timesteps
+        if model_timesteps.dtype.is_floating_point and model_timesteps.max() <= 1.0:
+            model_timesteps = model_timesteps.to(dtype=torch.float32) * 1000.0
         if self.config.cfg:
             prompt_embeds = torch.cat(
                 [forward_inputs["negative_prompt_embeds"].to(device), prompt_embeds],
@@ -188,7 +198,7 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
                 dim=0,
             )
             model_input = torch.cat([model_input] * 2)
-            model_timesteps = torch.cat([timesteps] * 2)
+            model_timesteps = torch.cat([model_timesteps] * 2)
 
         v_theta = self.transformer(
             hidden_states=model_input,

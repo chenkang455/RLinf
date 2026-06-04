@@ -135,7 +135,7 @@ actor:
       use_lora: True
       lora_rank: 32
       lora_alpha: 64
-      offload_auxiliary_modules: True
+      offload_auxiliary_modules: False
 
   optim:
     lr: 3.0e-4
