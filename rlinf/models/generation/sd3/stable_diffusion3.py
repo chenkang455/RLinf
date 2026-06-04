@@ -201,7 +201,7 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
             v_uncond, v_text = v_theta.chunk(2)
             v_theta = v_uncond + self.config.guidance_scale * (v_text - v_uncond)
 
-        return {"v_theta": v_theta, "x_t": x_t, "timesteps": timesteps}
+        return {"v_theta": v_theta}
 
     def obs_processor(self, env_obs: Any) -> list[str]:
         if isinstance(env_obs, Mapping):
