@@ -45,6 +45,8 @@ class StableDiffusion3Config:
     cfg: bool = True
     noise_level: float = 0.7
     eval_noise_level: float = 0.0
+    train_sampler: Literal["sde", "ode", "dpm1", "dpm2"] = "sde"
+    eval_sampler: Literal["sde", "ode", "dpm1", "dpm2"] = "ode"
     max_sequence_length: int = 128
     output_type: str = "pt"
     rl_mode: Literal["flow-grpo", "nft"] = "flow-grpo"
@@ -270,6 +272,7 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
         noise_level = (
             self.config.eval_noise_level if mode == "eval" else self.config.noise_level
         )
+        solver = self.config.eval_sampler if is_eval else self.config.train_sampler
         images, latents_chain, log_probs = denoise_with_logprob(
             pipeline=self.pipeline,
             transformer=self.transformer,
@@ -280,6 +283,7 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
             cfg_enabled=self.config.cfg,
             guidance_scale=guidance_scale,
             noise_level=noise_level,
+            solver=solver,
             num_steps=num_steps,
             resolution=self.config.resolution,
             output_type=self.config.output_type,
@@ -316,6 +320,11 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
             )
         if self.config.rl_mode == "nft":
             forward_inputs["nft_x0"] = full_latents[:, -1].detach()
+            forward_inputs["nft_noise_level"] = torch.zeros(
+                full_latents.shape[0],
+                device=full_latents.device,
+                dtype=full_latents.dtype,
+            )
 
         return images, {
             "prev_logprobs": old_logprobs[:, :num_train_timesteps].detach(),

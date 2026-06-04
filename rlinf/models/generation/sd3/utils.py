@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import math
 from collections.abc import Sequence
 from typing import Any
 
@@ -22,7 +21,12 @@ import torch
 from diffusers.pipelines.stable_diffusion_3.pipeline_stable_diffusion_3 import (
     retrieve_timesteps,
 )
-from diffusers.utils.torch_utils import randn_tensor
+from rlinf.models.generation.sd3.sampler import (
+    init_solver_state,
+    model_timestep,
+    sample_latents_step,
+    sde_step_with_logprob,
+)
 
 
 def prompt_list(value: str | Sequence[str]) -> list[str]:
@@ -77,65 +81,6 @@ def move_pipeline_modules(pipeline: Any, *, inference_dtype: torch.dtype):
     pipeline.transformer.to(dtype=inference_dtype)
 
 
-def sde_step_with_logprob(
-    scheduler,
-    model_output: torch.Tensor,
-    timestep: torch.Tensor,
-    sample: torch.Tensor,
-    *,
-    noise_level: float,
-    prev_sample: torch.Tensor | None = None,
-    compute_logprob: bool = True,
-):
-    model_output = model_output.float()
-    sample = sample.float()
-    prev_sample = None if prev_sample is None else prev_sample.float()
-
-    scheduler_timesteps = scheduler.timesteps.to(
-        device=timestep.device,
-        dtype=torch.float32,
-    )
-    if scheduler_timesteps.numel() == 0:
-        raise ValueError("Scheduler timesteps are empty. Call retrieve_timesteps first.")
-
-    timestep = timestep.reshape(-1).to(dtype=torch.float32)
-    step_index = (timestep[:, None] - scheduler_timesteps[None, :]).abs().argmin(dim=1)
-    prev_step_index = step_index + 1
-
-    sigma = scheduler.sigmas[step_index].view(-1, *([1] * (sample.ndim - 1)))
-    sigma_prev = scheduler.sigmas[prev_step_index].view(
-        -1,
-        *([1] * (sample.ndim - 1)),
-    )
-    sigma_max = scheduler.sigmas[1].item()
-    dt = sigma_prev - sigma
-
-    std = torch.sqrt(sigma / (1 - torch.where(sigma == 1, sigma_max, sigma)))
-    std = std * noise_level
-    mean = sample * (1 + std**2 / (2 * sigma) * dt)
-    mean += model_output * (1 + std**2 * (1 - sigma) / (2 * sigma)) * dt
-
-    diffusion_std = std * torch.sqrt(-dt)
-    if prev_sample is None:
-        noise = randn_tensor(
-            model_output.shape,
-            device=model_output.device,
-            dtype=model_output.dtype,
-        )
-        prev_sample = mean + diffusion_std * noise
-
-    if not compute_logprob:
-        return prev_sample, None, mean, std
-
-    log_prob = (
-        -((prev_sample.detach() - mean) ** 2) / (2 * diffusion_std**2)
-        - torch.log(diffusion_std)
-        - torch.log(torch.sqrt(2 * torch.as_tensor(math.pi)))
-    )
-    log_prob = log_prob.mean(dim=tuple(range(1, log_prob.ndim)))
-    return prev_sample, log_prob, mean, std
-
-
 @torch.no_grad()
 def denoise_with_logprob(
     *,
@@ -151,6 +96,7 @@ def denoise_with_logprob(
     num_steps: int,
     resolution: int,
     output_type: str,
+    solver: str = "sde",
     offload_vae: bool = False,
     return_trajectory: bool = True,
     generator=None,
@@ -185,14 +131,28 @@ def denoise_with_logprob(
     )
     pipeline._num_timesteps = len(timesteps)
     model_dtype = next(transformer.parameters()).dtype
+    sigmas = pipeline.scheduler.sigmas.to(
+        device=prompt_embeds.device,
+        dtype=torch.float32,
+    )
+    solver, dpm_state = init_solver_state(solver)
+    use_dpm = dpm_state is not None
 
     latent_chain = [latents] if return_trajectory else None
     log_probs = [] if return_trajectory else None
     with pipeline.progress_bar(total=num_steps) as progress_bar:
-        for t in timesteps:
+        for step_index, t in enumerate(timesteps):
             model_latents = latents.to(dtype=model_dtype)
-            model_input = torch.cat([model_latents] * 2) if cfg_enabled else model_latents
-            timestep = t.expand(model_input.shape[0])
+            model_input = (
+                torch.cat([model_latents] * 2) if cfg_enabled else model_latents
+            )
+            timestep = model_timestep(
+                t,
+                sigmas=sigmas,
+                step_index=step_index,
+                batch_size=model_input.shape[0],
+                use_dpm=use_dpm,
+            )
             noise_pred = transformer(
                 hidden_states=model_input,
                 timestep=timestep,
@@ -206,13 +166,17 @@ def denoise_with_logprob(
                     noise_pred_text - noise_pred_uncond
                 )
 
-            latents, log_prob, _, _ = sde_step_with_logprob(
-                pipeline.scheduler,
-                noise_pred,
-                t.unsqueeze(0),
-                latents,
+            latents, log_prob = sample_latents_step(
+                scheduler=pipeline.scheduler,
+                solver=solver,
+                noise_pred=noise_pred,
+                timestep=t,
+                latents=latents,
                 noise_level=noise_level,
                 compute_logprob=return_trajectory,
+                step_index=step_index,
+                sigmas=sigmas,
+                dpm_state=dpm_state,
             )
             if return_trajectory:
                 latent_chain.append(latents)
