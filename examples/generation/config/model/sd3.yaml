@@ -1,6 +1,6 @@
 model_type: "sd3"
-model_path: "/mnt/public2/chenkang/wam_rl/flow_grpo/models/stable-diffusion-3.5-medium"
-precision: "fp16"
+model_path: "/mnt/public2/chenkang/wam_rl/video_rl/flow_grpo/models/stable-diffusion-3.5-medium"
+precision: "bf16"
 load_to_device: True
 num_action_chunks: 1
 action_dim: 1

@@ -24,6 +24,19 @@ from diffusers.pipelines.stable_diffusion_3.pipeline_stable_diffusion_3 import (
 from diffusers.utils.torch_utils import randn_tensor
 
 
+def _scheduler_step_indices(scheduler, timestep: torch.Tensor) -> list[int]:
+    scheduler_timesteps = scheduler.timesteps
+    if scheduler_timesteps.numel() == 0:
+        raise ValueError("Scheduler timesteps are empty. Call retrieve_timesteps first.")
+    scheduler_timesteps = scheduler_timesteps.to(
+        device=timestep.device,
+        dtype=torch.float32,
+    )
+    timestep = timestep.reshape(-1).to(dtype=torch.float32)
+    distances = (timestep[:, None] - scheduler_timesteps[None, :]).abs()
+    return distances.argmin(dim=1).tolist()
+
+
 def sde_step_with_logprob(
     scheduler,
     model_output: torch.Tensor,
@@ -37,7 +50,7 @@ def sde_step_with_logprob(
     sample = sample.float()
     prev_sample = None if prev_sample is None else prev_sample.float()
 
-    step_index = [scheduler.index_for_timestep(t) for t in timestep]
+    step_index = _scheduler_step_indices(scheduler, timestep)
     prev_step_index = [idx + 1 for idx in step_index]
     sigma = scheduler.sigmas[step_index].view(-1, *([1] * (sample.ndim - 1)))
     sigma_prev = scheduler.sigmas[prev_step_index].view(

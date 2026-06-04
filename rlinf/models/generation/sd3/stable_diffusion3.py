@@ -327,6 +327,27 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
             return transformer.module.disable_adapter()
         return nullcontext()
 
+    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
+        if self.transformer is None:
+            return
+        enable_fn = getattr(self.transformer, "gradient_checkpointing_enable", None)
+        if enable_fn is None:
+            return
+        if gradient_checkpointing_kwargs is None:
+            enable_fn()
+            return
+        try:
+            enable_fn(gradient_checkpointing_kwargs=gradient_checkpointing_kwargs)
+        except TypeError:
+            enable_fn()
+
+    def gradient_checkpointing_disable(self):
+        if self.transformer is None:
+            return
+        disable_fn = getattr(self.transformer, "gradient_checkpointing_disable", None)
+        if disable_fn is not None:
+            disable_fn()
+
     def trainable_parameters(self):
         return [param for param in self.parameters() if param.requires_grad]
 

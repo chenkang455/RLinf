@@ -16,7 +16,7 @@ video_cfg:
   video_base_dir: ${runner.logger.log_path}/video/image_reward
 
 dataset:
-  path: "/mnt/public2/chenkang/wam_rl/flow_grpo/dataset/ocr"
+  path: "/mnt/public2/chenkang/wam_rl/video_rl/flow_grpo/dataset/ocr"
   split: "train"
 
 reward:
