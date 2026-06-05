@@ -100,12 +100,13 @@ SupportedModel.RESNET_REWARD = SupportedModel.register("resnet", force=True)
 SupportedModel.CFG_MODEL = SupportedModel.register("cfg_model", force=True)
 SupportedModel.VALUE_MODEL = SupportedModel.register("value_model", force=True)
 SupportedModel.SD3 = SupportedModel.register("sd3", force=True)
+SupportedModel.WAN22_TI2V_5B = SupportedModel.register("wan22_ti2v_5b", force=True)
 
 SupportedModel.QWEN2_5_VL_SFT = SupportedModel.register("qwen2.5_vl", force=True)
 SupportedModel.QWEN3_VL_SFT = SupportedModel.register("qwen3_vl", force=True)
 SupportedModel.QWEN3_VL_MOE_SFT = SupportedModel.register("qwen3_vl_moe", force=True)
 
-GENERATION_MODEL = {SupportedModel.SD3}
+GENERATION_MODEL = {SupportedModel.SD3, SupportedModel.WAN22_TI2V_5B}
 
 EMBODIED_MODEL = set(
     {

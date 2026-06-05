@@ -129,6 +129,11 @@ def _register_builtin_models():
 
         return get_model(cfg, torch_dtype)
 
+    def _build_wan22_ti2v_5b(cfg: DictConfig, torch_dtype):
+        from rlinf.models.generation.wan import get_model
+
+        return get_model(cfg, torch_dtype)
+
     register_model(
         SupportedModel.OPENVLA.value,
         _build_openvla,
@@ -216,6 +221,12 @@ def _register_builtin_models():
     register_model(
         SupportedModel.SD3.value,
         _build_sd3,
+        category="generation",
+        force=True,
+    )
+    register_model(
+        SupportedModel.WAN22_TI2V_5B.value,
+        _build_wan22_ti2v_5b,
         category="generation",
         force=True,
     )
