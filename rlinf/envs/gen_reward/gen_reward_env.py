@@ -52,6 +52,14 @@ class GenRewardEnv(gym.Env):
         self.is_eval = bool(cfg_get(cfg, "is_eval", False))
         self._generator = np.random.default_rng(seed=self.seed)
         self._cursor = 0
+        video_cfg = cfg_get(cfg, "video_cfg", {})
+        self.image_frame_repeat = max(
+            1, int(cfg_get(video_cfg, "image_frame_repeat", 8))
+        )
+        self.num_capture_samples = max(
+            1, int(cfg_get(video_cfg, "num_capture_samples", 3))
+        )
+        self._last_capture_media: np.ndarray | None = None
 
         self.prompt_dataset = PromptDataset.from_config(cfg_get(cfg, "dataset", {}))
         reward_cfg = cfg_get(cfg, "reward", {})
@@ -78,6 +86,7 @@ class GenRewardEnv(gym.Env):
 
     def reset(self, *args, **kwargs) -> tuple[dict[str, Any], dict[str, Any]]:
         del args, kwargs
+        self._last_capture_media = None
         group_indices = self._next_group_indices()
         records = [
             copy.deepcopy(self.prompt_dataset[int(index)]) for index in group_indices
@@ -99,6 +108,7 @@ class GenRewardEnv(gym.Env):
     ) -> tuple[dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
         if self._current_obs is None:
             self.reset()
+        self._last_capture_media = self._prepare_capture_media(images)
         prompts = [metadata.get("prompt", "") for metadata in self._current_metadatas]
         scores = self.reward_backend.score(images, prompts, self._current_metadatas)
         if self.reward_key not in scores:
@@ -115,9 +125,11 @@ class GenRewardEnv(gym.Env):
         }
         for key, value in scores.items():
             episode[key] = value.detach().float()
+        capture_media = self._last_capture_media
         final_obs = self._current_obs
         if auto_reset and self.auto_reset:
             next_obs, _ = self.reset()
+            self._last_capture_media = capture_media
         else:
             next_obs = self._current_obs
 
@@ -127,6 +139,29 @@ class GenRewardEnv(gym.Env):
             "final_observation": final_obs,
         }
         return next_obs, rewards, terminations, truncations, infos
+
+    def capture_image(self) -> np.ndarray | None:
+        return self._last_capture_media
+
+    def _prepare_capture_media(
+        self, media: torch.Tensor | np.ndarray | list[Any]
+    ) -> np.ndarray | None:
+        if media is None:
+            return None
+        if isinstance(media, torch.Tensor):
+            media = media.detach().cpu().numpy()
+        else:
+            media = np.asarray(media)
+
+        if media.ndim not in (4, 5):
+            return None
+        if np.issubdtype(media.dtype, np.floating):
+            media = np.clip(media, 0.0, 1.0) * 255.0
+        media = np.rint(media).clip(0, 255).astype(np.uint8)
+
+        if media.ndim == 4:
+            media = np.repeat(media[:, None], self.image_frame_repeat, axis=1)
+        return media[: self.num_capture_samples]
 
     def chunk_step(
         self, images: torch.Tensor | np.ndarray | list[Any]
@@ -141,8 +176,10 @@ class GenRewardEnv(gym.Env):
             images,
             auto_reset=False,
         )
+        capture_media = self._last_capture_media
         if torch.logical_or(terminations, truncations).any() and self.auto_reset:
             obs, _ = self.reset()
+            self._last_capture_media = capture_media
         return (
             [obs],
             rewards.unsqueeze(1),
