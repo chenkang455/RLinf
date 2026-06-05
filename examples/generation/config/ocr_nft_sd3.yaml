@@ -26,10 +26,10 @@ runner:
     project_name: rlinf
     experiment_name: "ocr_nft_sd3_diffusionnft"
     logger_backends: ["tensorboard"]
-  max_epochs: 100000
+  max_epochs: 200
   max_steps: -1
   only_eval: False
-  val_check_interval: 10
+  val_check_interval: -1
   save_interval: -1
   resume_dir: null
   ckpt_path: null
@@ -45,7 +45,7 @@ algorithm:
   eval_rollout_epoch: 8
 
   reward_type: chunk_level
-  logprob_type: chunk_level
+  logprob_type: token_level
   entropy_type: token_level
   update_epoch: 1
   adv_type: grpo
@@ -67,10 +67,10 @@ algorithm:
   dpo_beta: 1.0
   max_drift: 1.0e9
   nft_weight_mode: adaptive
-  nft_weight_scale: 50.0
+  nft_weight_scale: 1.0
   nft_target_space: x0
   nft_xcur_source: resample
-  nft_tau: [1.0, 0.001, 75, 209]
+  nft_tau: [1.0, 0.001, 75, 200]
   recompute_v: False
   nft_sum_type: token_level
 

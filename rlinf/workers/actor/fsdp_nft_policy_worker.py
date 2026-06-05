@@ -90,7 +90,6 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
 
     def soft_update_rollout_model(self) -> None:
         """Soft update rollout model: state = (1-tau)*state + tau*current. No-op when tau=1."""
-        # TODO: potential bug on model state dict transfer, need to check
         if not self.rollout_model_state_dict:
             return
         tau = self._get_current_nft_tau()
@@ -476,7 +475,10 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
             return masked_mean(F.softplus(logit), loss_mask)
         elif loss_form == "mse":
             r = advantages
-            return masked_mean(r * e_pos + (1.0 - r) * e_neg, loss_mask)
+            adv_clip_max = float(self.cfg.algorithm.get("adv_clip_max", 1.0))
+            beta = float(self.cfg.algorithm.get("nft_beta", 1.0))
+            loss_scale = adv_clip_max / beta
+            return masked_mean((r * e_pos + (1.0 - r) * e_neg) * loss_scale, loss_mask)
         else:
             raise ValueError(f"Unsupported nft_loss_form: {loss_form}")
 
