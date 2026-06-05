@@ -21,6 +21,8 @@ import gym
 import numpy as np
 import torch
 
+from rlinf.envs.utils import put_text_on_image
+
 from .datasets import PromptDataset
 from .rewards import GenRewardBackend, build_reward_backend, cfg_get
 
@@ -108,8 +110,8 @@ class GenRewardEnv(gym.Env):
     ) -> tuple[dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
         if self._current_obs is None:
             self.reset()
-        self._last_capture_media = self._prepare_capture_media(images)
         prompts = [metadata.get("prompt", "") for metadata in self._current_metadatas]
+        self._last_capture_media = self._prepare_capture_media(images, prompts)
         scores = self.reward_backend.score(images, prompts, self._current_metadatas)
         if self.reward_key not in scores:
             raise KeyError(
@@ -144,7 +146,9 @@ class GenRewardEnv(gym.Env):
         return self._last_capture_media
 
     def _prepare_capture_media(
-        self, media: torch.Tensor | np.ndarray | list[Any]
+        self,
+        media: torch.Tensor | np.ndarray | list[Any],
+        prompts: list[str] | None = None,
     ) -> np.ndarray | None:
         if media is None:
             return None
@@ -160,8 +164,31 @@ class GenRewardEnv(gym.Env):
         media = np.rint(media).clip(0, 255).astype(np.uint8)
 
         if media.ndim == 4:
+            if media.shape[1] in (1, 3, 4) and media.shape[-1] not in (1, 3, 4):
+                media = np.transpose(media, (0, 2, 3, 1))
             media = np.repeat(media[:, None], self.image_frame_repeat, axis=1)
-        return media[: self.num_capture_samples]
+        elif media.shape[2] in (1, 3, 4) and media.shape[-1] not in (1, 3, 4):
+            media = np.transpose(media, (0, 1, 3, 4, 2))
+
+        media = media[: self.num_capture_samples]
+        if prompts:
+            media = self._put_prompts_on_capture_media(media, prompts)
+        return media
+
+    def _put_prompts_on_capture_media(
+        self, media: np.ndarray, prompts: list[str]
+    ) -> np.ndarray:
+        media = media.copy()
+        max_width = max(120, media.shape[3] - 20)
+        for batch_idx, prompt in enumerate(prompts[: media.shape[0]]):
+            lines = [f"prompt: {prompt}"]
+            for frame_idx in range(media.shape[1]):
+                media[batch_idx, frame_idx] = put_text_on_image(
+                    media[batch_idx, frame_idx],
+                    lines,
+                    max_width=max_width,
+                )
+        return media
 
     def chunk_step(
         self, images: torch.Tensor | np.ndarray | list[Any]

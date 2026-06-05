@@ -95,6 +95,8 @@ env:
     group_size: ${algorithm.group_size}
     max_episode_steps: 1
     max_steps_per_rollout_epoch: 1
+    video_cfg:
+      save_video: True
     dataset:
       path: "/mnt/public2/chenkang/wam_rl/video_rl/DiffusionNFT/dataset/ocr"
       split: "train"

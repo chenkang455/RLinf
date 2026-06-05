@@ -10,7 +10,7 @@ lora_rank: 64
 
 wan22_ti2v_5b:
   rl_mode: nft
-  resolution: [384, 672]
+  resolution: [512, 512]
   num_frames: 1
   num_steps: 8
   eval_num_steps: 20
