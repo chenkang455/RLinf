@@ -59,7 +59,13 @@ class OCRRewardBackend(GenRewardBackend):
         rewards_tensor = torch.as_tensor(rewards, dtype=torch.float32)
         return {"avg": rewards_tensor, "ocr": rewards_tensor, "accuracy": rewards_tensor}
 
-    def _score_image(self, image: np.ndarray | Image.Image, target: str) -> float:
+    def _score_image(
+        self,
+        image: np.ndarray | Image.Image,
+        target: str,
+        *,
+        allow_substring_match: bool = True,
+    ) -> float:
         if isinstance(image, Image.Image):
             image = np.asarray(image.convert("RGB"), dtype=np.uint8)
         target = _normalize_text(target)
@@ -71,12 +77,61 @@ class OCRRewardBackend(GenRewardBackend):
                 res[1][0] if res[1][1] > 0 else "" for res in (result[0] or [])
             )
             recognized = _normalize_text(recognized)
-            dist = 0 if target in recognized else self.distance(recognized, target)
+            if allow_substring_match and target in recognized:
+                dist = 0
+            else:
+                dist = self.distance(recognized, target)
             dist = min(dist, len(target))
         except Exception as exc:
             print(f"OCR reward failed: {exc}")
             dist = len(target)
         return float(1.0 - dist / len(target))
+
+
+class VideoOCRRewardBackend(OCRRewardBackend):
+    def __init__(
+        self,
+        use_gpu: bool = False,
+        lang: str = "en",
+        frame_interval: int = 4,
+    ):
+        super().__init__(use_gpu=use_gpu, lang=lang)
+        self.frame_interval = max(1, int(frame_interval))
+
+    def score(
+        self,
+        images: torch.Tensor | np.ndarray | list[Any],
+        prompts: list[str],
+        metadatas: list[dict[str, Any]],
+    ) -> dict[str, torch.Tensor]:
+        del metadatas
+        media_array = images_to_uint8_nhwc(images)
+        rewards = []
+        for media, prompt in zip(media_array, prompts, strict=True):
+            target = _extract_quoted_text(prompt)
+            rewards.append(self._score_media(media, target))
+        rewards_tensor = torch.as_tensor(rewards, dtype=torch.float32)
+        return {
+            "avg": rewards_tensor,
+            "video_ocr": rewards_tensor,
+            "ocr": rewards_tensor,
+            "accuracy": rewards_tensor,
+        }
+
+    def _score_media(self, media: np.ndarray | Image.Image, target: str) -> float:
+        if isinstance(media, np.ndarray) and media.ndim == 4:
+            frames = media[:: self.frame_interval]
+        else:
+            frames = [media]
+
+        frame_rewards = []
+        for frame in frames:
+            reward = self._score_image(frame, target)
+            if reward > 0:
+                frame_rewards.append(reward)
+        if not frame_rewards:
+            return 0.0
+        return float(sum(frame_rewards) / len(frame_rewards))
 
 
 def _extract_quoted_text(prompt: str) -> str:

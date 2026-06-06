@@ -39,6 +39,10 @@ def cfg_get(cfg: Any, key: str, default: Any = None) -> Any:
 
 
 def images_to_uint8_nhwc(images: torch.Tensor | np.ndarray | list[Any]) -> np.ndarray:
+    """Convert image/video batches to uint8 channel-last format.
+
+    Images are returned as [B, H, W, C]. Videos are returned as [B, F, H, W, C].
+    """
     if isinstance(images, list):
         arrays = []
         for image in images:
@@ -54,16 +58,21 @@ def images_to_uint8_nhwc(images: torch.Tensor | np.ndarray | list[Any]) -> np.nd
 
     if images.ndim == 3:
         images = images[None]
-    if images.ndim != 4:
-        raise ValueError(f"Expected image batch with 4 dims, got shape {images.shape}.")
-    if images.shape[1] in (1, 3, 4) and images.shape[-1] not in (1, 3, 4):
-        images = np.transpose(images, (0, 2, 3, 1))
+    if images.ndim not in (4, 5):
+        raise ValueError(f"Expected image/video batch, got shape {images.shape}.")
     if np.issubdtype(images.dtype, np.floating):
         images = np.clip(images, 0.0, 1.0) * 255.0
     images = np.rint(images).clip(0, 255).astype(np.uint8)
+
+    if images.ndim == 4:
+        if images.shape[1] in (1, 3, 4) and images.shape[-1] not in (1, 3, 4):
+            images = np.transpose(images, (0, 2, 3, 1))
+    elif images.ndim == 5:
+        if images.shape[2] in (1, 3, 4) and images.shape[-1] not in (1, 3, 4):
+            images = np.transpose(images, (0, 1, 3, 4, 2))
+
     if images.shape[-1] == 1:
         images = np.repeat(images, 3, axis=-1)
     if images.shape[-1] == 4:
         images = images[..., :3]
     return images
-

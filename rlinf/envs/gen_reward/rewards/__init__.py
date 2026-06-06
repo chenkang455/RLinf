@@ -23,7 +23,7 @@ from .basic import JPEGCompressibilityRewardBackend, MockGenRewardBackend
 from .geneval import GenevalRewardBackend
 from .imagereward import ImageRewardBackend
 from .multi import MultiRewardBackend
-from .ocr import OCRRewardBackend
+from .ocr import OCRRewardBackend, VideoOCRRewardBackend
 from .pickscore import PickScoreRewardBackend
 
 
@@ -46,6 +46,12 @@ def build_reward_backend(cfg: Any) -> GenRewardBackend:
         return OCRRewardBackend(
             use_gpu=bool(cfg_get(cfg, "use_gpu", False)),
             lang=str(cfg_get(cfg, "lang", "en")),
+        )
+    if reward_type == "video_ocr":
+        return VideoOCRRewardBackend(
+            use_gpu=bool(cfg_get(cfg, "use_gpu", False)),
+            lang=str(cfg_get(cfg, "lang", "en")),
+            frame_interval=int(cfg_get(cfg, "frame_interval", 4)),
         )
     if reward_type == "pickscore":
         return PickScoreRewardBackend(device=device, dtype=dtype)
