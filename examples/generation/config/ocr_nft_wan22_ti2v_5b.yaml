@@ -24,12 +24,12 @@ runner:
   logger:
     log_path: "../results"
     project_name: rlinf
-    experiment_name: "ocr_nft_wan22_ti2v_5b"
+    experiment_name: "ocr_nft_wan22_ti2v_5b_compile_lr4e4"
     logger_backends: ["tensorboard"]
   max_epochs: 200
   max_steps: -1
   only_eval: False
-  val_check_interval: 10
+  val_check_interval: -1
   save_interval: -1
   resume_dir: null
   ckpt_path: null
@@ -39,10 +39,10 @@ algorithm:
   kl_penalty: kl
   kl_penalty_type: kl
 
-  group_size: 8
+  group_size: 24
   reward_coef: 1.0
-  rollout_epoch: 1
-  eval_rollout_epoch: 2
+  rollout_epoch: 6
+  eval_rollout_epoch: 8
 
   reward_type: chunk_level
   logprob_type: token_level
@@ -70,7 +70,7 @@ algorithm:
   nft_weight_scale: 1.0
   nft_target_space: x0
   nft_xcur_source: resample
-  nft_tau: [1.0, 0.001, 75, 200]
+  nft_tau: 1.0
   recompute_v: False
   nft_sum_type: token_level
 
@@ -91,12 +91,12 @@ env:
   group_name: "EnvGroup"
   enable_offload: False
   train:
-    total_num_envs: 64
+    total_num_envs: 192
     group_size: ${algorithm.group_size}
     max_episode_steps: 1
     max_steps_per_rollout_epoch: 1
     video_cfg:
-      save_video: True
+      save_video: False
     dataset:
       path: "/mnt/public2/chenkang/wam_rl/video_rl/DiffusionNFT/dataset/ocr"
       split: "train"
@@ -106,7 +106,7 @@ env:
       use_gpu: False
       lang: "en"
   eval:
-    total_num_envs: 32
+    total_num_envs: 128
     group_size: 1
     max_episode_steps: 1
     max_steps_per_rollout_epoch: 1
@@ -134,14 +134,37 @@ rollout:
 actor:
   group_name: "ActorGroup"
   training_backend: "fsdp"
-  micro_batch_size: 1
-  global_batch_size: 8
+  micro_batch_size: 4
+  global_batch_size: 576
   seed: 42
   enable_offload: False
 
+  model:
+    model_path: "/mnt/public2/chenkang/wam_rl/checkpoints/Wan2.2-TI2V-5B-Diffusers"
+    precision: "bf16"
+    wan22_ti2v_5b:
+      rl_mode: nft
+      resolution: [512, 512]
+      num_frames: 1
+      num_steps: 10
+      eval_num_steps: 20
+      timestep_fraction: 0.99
+      guidance_scale: 1.0
+      eval_guidance_scale: 1.0
+      cfg: False
+      max_sequence_length: 256
+      output_type: "pt"
+      use_lora: True
+      lora_rank: 32
+      lora_alpha: 64
+      lora_path: null
+      offload_auxiliary_modules: False
+      compile_transformer_forward: True
+      compile_mode: "default"
+
   optim:
-    lr: 1.0e-5
-    value_lr: 1.0e-5
+    lr: 4.0e-4
+    value_lr: 3.0e-4
     adam_beta1: 0.9
     adam_beta2: 0.999
     adam_eps: 1.0e-08

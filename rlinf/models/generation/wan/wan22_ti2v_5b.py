@@ -43,6 +43,8 @@ class Wan22_TI2V_5B_Config:
     lora_alpha: int = 128
     lora_path: str | None = None
     init_lora_weights: str = "gaussian"
+    compile_transformer_forward: bool = False
+    compile_mode: str = "default"
     target_modules: list[str] = field(
         default_factory=lambda: [
             "attn1.to_q",
@@ -78,6 +80,7 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
         self.model_path = str(config.model_path)
         self.pipeline = pipeline
         self.transformer = pipeline.transformer
+        self._compiled_transformer_forward = None
 
     @property
     def _no_split_modules(self) -> list[str]:
@@ -90,6 +93,18 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
             self.pipeline.vae.to(device=device)
             self.pipeline.text_encoder.to(device=device)
         return module
+
+    @staticmethod
+    def _configure_torch_dynamo_for_compile() -> None:
+        dynamo_config = torch._dynamo.config
+        for name, value in (
+            ("cache_size_limit", 1000),
+            ("recompile_limit", 800),
+            ("accumulated_cache_size_limit", 1000),
+            ("accumulated_recompile_limit", 2000),
+        ):
+            if hasattr(dynamo_config, name):
+                setattr(dynamo_config, name, max(getattr(dynamo_config, name), value))
 
     def forward(self, forward_type=ForwardType.DEFAULT, **kwargs):
         if forward_type == ForwardType.DEFAULT:
@@ -257,6 +272,8 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
         device = prompt_embeds.device
         model_dtype = next(self.transformer.parameters()).dtype
         self.pipeline.scheduler.set_timesteps(num_steps, device=device)
+        if hasattr(self.pipeline.scheduler, "sigmas"):
+            self.pipeline.scheduler.sigmas = self.pipeline.scheduler.sigmas.to(device)
         timesteps = self.pipeline.scheduler.timesteps
         height, width = self._height_width()
         latents = self.pipeline.prepare_latents(
@@ -317,14 +334,14 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
         negative_prompt_embeds: torch.Tensor | None,
         guidance_scale: float,
     ) -> torch.Tensor:
-        noise_pred = self.transformer(
+        noise_pred = self._call_transformer(
             hidden_states=latents,
             timestep=timestep,
             encoder_hidden_states=prompt_embeds,
             return_dict=False,
         )[0]
         if self.config.cfg:
-            noise_uncond = self.transformer(
+            noise_uncond = self._call_transformer(
                 hidden_states=latents,
                 timestep=timestep,
                 encoder_hidden_states=negative_prompt_embeds,
@@ -332,6 +349,17 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
             )[0]
             noise_pred = noise_uncond + guidance_scale * (noise_pred - noise_uncond)
         return noise_pred
+
+    def _call_transformer(self, **kwargs):
+        if not self.config.compile_transformer_forward:
+            return self.transformer(**kwargs)
+        if self._compiled_transformer_forward is None:
+            self._configure_torch_dynamo_for_compile()
+            self._compiled_transformer_forward = torch.compile(
+                self.transformer.forward,
+                mode=self.config.compile_mode,
+            )
+        return self._compiled_transformer_forward(**kwargs)
 
     def _scheduler_to_model_timesteps(
         self,
