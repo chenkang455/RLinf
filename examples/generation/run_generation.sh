@@ -4,6 +4,7 @@ export EMBODIED_PATH="$( cd "$(dirname "${BASH_SOURCE[0]}" )" && pwd )"
 export REPO_PATH=$(dirname $(dirname "$EMBODIED_PATH"))
 export SRC_FILE="${REPO_PATH}/examples/embodiment/train_embodied_agent.py"
 export PYTHONPATH=${REPO_PATH}:$PYTHONPATH
+export PYTHONPATH=/mnt/public2/chenkang/wam_rl/envs/wan_diffusers_pydeps:$PYTHONPATH
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 if [ -z "$1" ]; then
