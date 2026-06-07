@@ -273,7 +273,9 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
                 clear_memory()
 
             ref_model = self.model_provider_func()
-            ref_config.compile_transformer_forward = False
+            ref_config = getattr(ref_model, "config", None)
+            if hasattr(ref_config, "compile_transformer_forward"):
+                ref_config.compile_transformer_forward = False
             ref_model.load_state_dict(self.get_rollout_state_dict(), strict=False)
             ref_model.eval()
             ref_model.requires_grad_(False)
