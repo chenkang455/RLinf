@@ -99,10 +99,11 @@ env:
     video_cfg:
       save_video: False
     dataset:
+      type: "generation.text_dataset"
       path: "/mnt/public2/chenkang/wam_rl/video_rl/DiffusionNFT/dataset/ocr"
       split: "train"
     reward:
-      type: "ocr"
+      type: "generation.ocr"
       key: "avg"
       use_gpu: False
       lang: "en"
@@ -113,10 +114,11 @@ env:
     max_steps_per_rollout_epoch: 1
     is_eval: True
     dataset:
+      type: "generation.text_dataset"
       path: "/mnt/public2/chenkang/wam_rl/video_rl/DiffusionNFT/dataset/ocr"
       split: "test"
     reward:
-      type: "ocr"
+      type: "generation.ocr"
       key: "avg"
       use_gpu: False
       lang: "en"
