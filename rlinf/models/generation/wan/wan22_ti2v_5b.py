@@ -38,6 +38,8 @@ class Wan22_TI2V_5B_Config:
     max_sequence_length: int = 512
     output_type: str = "pt"
     rl_mode: Literal["flow-grpo", "nft"] = "nft"
+    weight_format: Literal["diffusers", "vidar"] = "diffusers"
+    vidar_path: str | None = None
     use_lora: bool = True
     lora_rank: int = 64
     lora_alpha: int = 128

@@ -20,6 +20,8 @@ wan22_ti2v_5b:
   cfg: False
   max_sequence_length: 256
   output_type: "pt"
+  weight_format: "diffusers"
+  vidar_path: null
   use_lora: True
   lora_rank: 32
   lora_alpha: 64
