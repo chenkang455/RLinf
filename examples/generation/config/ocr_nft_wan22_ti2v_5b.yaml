@@ -65,7 +65,6 @@ algorithm:
   nft_beta: 0.1
   adv_clip_max: 5.0
   dpo_beta: 1.0
-  max_drift: 1.0e9
   nft_weight_mode: adaptive
   nft_weight_scale: 1.0
   nft_target_space: x0
@@ -73,7 +72,8 @@ algorithm:
   nft_tau: [1.0, 0.01, 0, 70]
   nft_clip_ratio: 0.1
   recompute_v: False
-  nft_sum_type: token_level
+  nft_gather_type: action_level
+  nft_energy_reduction: mean
 
   sampling_params:
     do_sample: True

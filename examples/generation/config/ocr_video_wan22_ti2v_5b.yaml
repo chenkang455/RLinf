@@ -24,7 +24,7 @@ runner:
   logger:
     log_path: "../results"
     project_name: rlinf
-    experiment_name: "ocr_video_wan22_ti2v_5b"
+    experiment_name: "ocr_video_wan22_ti2v_5b_g6_re12_tau05_70_clip01_lr3e4"
     logger_backends: ["tensorboard"]
   max_epochs: 100
   max_steps: -1
@@ -39,12 +39,12 @@ algorithm:
   kl_penalty: kl
   kl_penalty_type: kl
 
-  group_size: 24
+  group_size: 6
   reward_coef: 1.0
-  rollout_epoch: 6
+  rollout_epoch: 12
   eval_rollout_epoch: 8
 
-  reward_type: chunk_level
+  reward_type: action_level
   logprob_type: token_level
   entropy_type: token_level
   update_epoch: 1
@@ -65,14 +65,15 @@ algorithm:
   nft_beta: 0.1
   adv_clip_max: 5.0
   dpo_beta: 1.0
-  max_drift: 1.0e9
   nft_weight_mode: adaptive
   nft_weight_scale: 1.0
   nft_target_space: x0
   nft_xcur_source: resample
-  nft_tau: 1.0
+  nft_tau: [0.5, 0.01, 0, 70]
+  nft_clip_ratio: 0.1
   recompute_v: False
-  nft_sum_type: token_level
+  nft_gather_type: action_level
+  nft_energy_reduction: mean
 
   sampling_params:
     do_sample: True
@@ -91,10 +92,10 @@ env:
   group_name: "EnvGroup"
   enable_offload: False
   train:
-    total_num_envs: 192
+    total_num_envs: 48
     group_size: ${algorithm.group_size}
     max_episode_steps: 1
-    max_steps_per_rollout_epoch: 1
+    max_steps_per_rollout_epoch: 5
     video_cfg:
       save_video: False
     dataset:
@@ -107,10 +108,10 @@ env:
       lang: "en"
       frame_interval: 4
   eval:
-    total_num_envs: 128
+    total_num_envs: 48
     group_size: 1
     max_episode_steps: 1
-    max_steps_per_rollout_epoch: 1
+    max_steps_per_rollout_epoch: 5
     is_eval: True
     dataset:
       path: "/mnt/public2/chenkang/wam_rl/video_rl/DiffusionNFT/dataset/ocr"
@@ -144,6 +145,8 @@ actor:
   model:
     model_path: "/mnt/public2/chenkang/wam_rl/checkpoints/Wan2.2-TI2V-5B-Diffusers"
     precision: "bf16"
+    # 1 first-frame chunk + ceil((num_frames - 1) / frame_interval).
+    num_action_chunks: 5
     wan22_ti2v_5b:
       rl_mode: nft
       resolution: [512, 512]
@@ -165,7 +168,7 @@ actor:
       compile_mode: "default"
 
   optim:
-    lr: 4.0e-4
+    lr: 3.0e-4
     value_lr: 3.0e-4
     adam_beta1: 0.9
     adam_beta2: 0.999

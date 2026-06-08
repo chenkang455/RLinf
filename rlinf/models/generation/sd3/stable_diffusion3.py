@@ -183,7 +183,7 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
 
         prompt_embeds = forward_inputs["prompt_embeds"].to(device)
         pooled_prompt_embeds = forward_inputs["pooled_prompt_embeds"].to(device)
-        model_input = x_t.to(dtype=model_dtype)
+        model_input = x_t[:, 0].to(dtype=model_dtype)
         model_timesteps = timesteps
         if model_timesteps.dtype.is_floating_point and model_timesteps.max() <= 1.0:
             model_timesteps = model_timesteps.to(dtype=torch.float32) * 1000.0
@@ -212,6 +212,7 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
         if self.config.cfg:
             v_uncond, v_text = v_theta.chunk(2)
             v_theta = v_uncond + self.config.guidance_scale * (v_text - v_uncond)
+        v_theta = v_theta[:, None]
 
         return {"v_theta": v_theta}
 
@@ -319,7 +320,7 @@ class StableDiffusion3(torch.nn.Module, BasePolicy):
                 negative_pooled_prompt_embeds.detach()
             )
         if self.config.rl_mode == "nft":
-            forward_inputs["nft_x0"] = full_latents[:, -1].detach()
+            forward_inputs["nft_x0"] = full_latents[:, -1][:, None].detach()
             forward_inputs["nft_noise_level"] = torch.zeros(
                 full_latents.shape[0],
                 device=full_latents.device,

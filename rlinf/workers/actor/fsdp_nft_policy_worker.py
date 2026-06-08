@@ -319,7 +319,7 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         target_space = self.cfg.algorithm.get("nft_target_space", "xnext")
         x_t_input = forward_inputs["nft_xcur"]
         step_indices = forward_inputs["nft_step_index"]
-        sum_type = self.cfg.algorithm.get("nft_sum_type", "action_level")
+        gather_type = self.cfg.algorithm.get("nft_gather_type", "action_level")
         schedule, t = self._build_schedule_and_timesteps(
             step_indices, x_t_input.device, x_t_input.dtype
         )
@@ -336,17 +336,7 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         v_theta = output_dict["v_theta"][:, :chunk, ...]
         x_t = forward_inputs["nft_xcur"][:, :chunk, ...]
         v_old = forward_inputs["nft_v"][:, :chunk, ...].detach()
-        batch_size, chunk_len = x_t.shape[:2]
-        if sum_type == "token_level":
-            loss_mask = batch["loss_mask"].reshape(batch_size, -1)[:, 0]
-            advantages = batch["advantages"].reshape(batch_size, -1)[:, 0]
-        elif sum_type == "action_level":
-            loss_mask = batch["loss_mask"].expand(batch_size, chunk_len)
-            advantages = batch["advantages"].expand(batch_size, chunk_len)
-        elif sum_type == "chunk_level":
-            loss_mask = batch["loss_mask"].reshape(batch_size, -1)[:, 0]
-            advantages = batch["advantages"].reshape(batch_size, -1)[:, 0]
-        advantages = self._postprocess_advantages(advantages)
+        batch_size = x_t.shape[0]
         # raw delta v and pos/neg candidates
         delta_v, v_pos, v_neg = self._compute_delta_v_candidates(v_theta, v_old)
         # build schedule params
@@ -363,37 +353,34 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         # compute weighted energies
         noise_level = forward_inputs["nft_noise_level"]
         weight_mode = self.cfg.algorithm.get("nft_weight_mode", "auto")
+        weight_kwargs = dict(
+            weight_mode=weight_mode,
+            t_bc=t_bc,
+            std_t_det=std_t_det,
+            noise_level=noise_level,
+            target=target,
+            gather_type=gather_type,
+        )
         w_pos = self._compute_nft_weight(
-            weight_mode,
-            t_bc,
-            std_t_det,
-            noise_level,
-            target,
-            sum_type,
-            pred=pred_pos,
-            sample_type="pos",
+            **weight_kwargs, pred=pred_pos, sample_type="pos"
         )
         w_neg = self._compute_nft_weight(
-            weight_mode,
-            t_bc,
-            std_t_det,
-            noise_level,
-            target,
-            sum_type,
-            pred=pred_neg,
-            sample_type="neg",
+            **weight_kwargs, pred=pred_neg, sample_type="neg"
         )
-        energy_reduction = "mean" if sum_type == "token_level" else "sum"
+        energy_reduction = str(self.cfg.algorithm.get("nft_energy_reduction", "mean"))
         e_pos = self._reduce_nft_tensor(
             (pred_pos - target) ** 2 * w_pos,
-            sum_type,
+            gather_type,
             energy_reduction,
         )
         e_neg = self._reduce_nft_tensor(
             (pred_neg - target) ** 2 * w_neg,
-            sum_type,
+            gather_type,
             energy_reduction,
         )
+        loss_mask = self._align_nft_signal(batch["loss_mask"], e_pos, batch_size)
+        advantages = self._align_nft_signal(batch["advantages"], e_pos, batch_size)
+        advantages = self._postprocess_advantages(advantages)
         # loss
         delta_e = e_pos - e_neg
         loss_form = self.cfg.algorithm.get("nft_loss_form", "dpo")
@@ -411,10 +398,10 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
             loss_elem = (advantages * e_pos + (1.0 - advantages) * e_neg) * loss_scale
             if clip_ratio is not None:
                 delta_norm = self._reduce_nft_tensor(
-                    delta_v, sum_type, "norm", keepdim=True
+                    delta_v, gather_type, "norm", keepdim=True
                 ).clamp_min(1e-8)
                 old_norm = self._reduce_nft_tensor(
-                    v_old, sum_type, "norm", keepdim=True
+                    v_old, gather_type, "norm", keepdim=True
                 ).clamp_min(1e-8)
                 clip_coef = (float(clip_ratio) * old_norm / delta_norm).clamp(max=1.0)
                 clip_frac = (clip_coef < 1.0).float().mean().item()
@@ -430,10 +417,10 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
                     forward_inputs, target_space, x_t, v_neg_clip, t_bc, dt_bc, sigma_i
                 )
                 e_pos_clip = self._reduce_nft_tensor(
-                    (pred_pos_clip - target) ** 2 * w_pos, sum_type, energy_reduction
+                    (pred_pos_clip - target) ** 2 * w_pos, gather_type, energy_reduction
                 )
                 e_neg_clip = self._reduce_nft_tensor(
-                    (pred_neg_clip - target) ** 2 * w_neg, sum_type, energy_reduction
+                    (pred_neg_clip - target) ** 2 * w_neg, gather_type, energy_reduction
                 )
                 clip_loss_elem = (
                     advantages * e_pos_clip + (1.0 - advantages) * e_neg_clip
@@ -447,7 +434,7 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
             raise ValueError(f"Unsupported nft_loss_form: {loss_form}")
         # metrics
         with torch.no_grad():
-            delta_v_norm = self._reduce_nft_tensor(delta_v, sum_type, "norm")
+            delta_v_norm = self._reduce_nft_tensor(delta_v, gather_type, "norm")
             delta_v_norm = delta_v_norm.mean().item()
             metrics_data = {
                 "actor/nft_loss": loss.item(),
@@ -497,33 +484,51 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         return delta_v, v_pos, v_neg
 
     @staticmethod
-    def _get_nft_sum_dims(sum_type: str, ndim: int) -> tuple[int, ...]:
-        if sum_type == "token_level":
-            return tuple(range(1, ndim))
-        if sum_type == "action_level":
+    def _align_nft_signal(
+        signal: torch.Tensor,
+        target: torch.Tensor,
+        batch_size: int,
+    ) -> torch.Tensor:
+        signal = signal.reshape(batch_size, -1)
+        if target.ndim == 1:
+            return signal[:, 0]
+        target_shape = target.shape
+        target_size = int(np.prod(tuple(target_shape[1:])))
+        if signal.shape[1] == target_size:
+            return signal.reshape(target_shape)
+        if signal.shape[1] == 1:
+            return signal.expand(target_shape)
+        raise ValueError(
+            f"Cannot align NFT signal shape {tuple(signal.shape)} "
+            f"to target shape {tuple(target_shape)}."
+        )
+
+    @staticmethod
+    def _get_nft_reduce_dims(gather_type: str, ndim: int) -> tuple[int, ...]:
+        if gather_type == "action_level":
             return tuple(range(2, ndim))
-        if sum_type == "chunk_level":
+        if gather_type == "chunk_level":
             return tuple(range(1, ndim))
-        raise ValueError(f"Unsupported nft_sum_type: {sum_type}")
+        raise ValueError(f"Unsupported nft_gather_type: {gather_type}")
 
     @classmethod
     def _reduce_nft_tensor(
         cls,
         tensor: torch.Tensor,
-        sum_type: str,
+        gather_type: str,
         reduction: str,
         *,
         keepdim: bool = False,
     ) -> torch.Tensor:
-        sum_dims = cls._get_nft_sum_dims(sum_type, tensor.ndim)
-        if not sum_dims:
+        reduce_dims = cls._get_nft_reduce_dims(gather_type, tensor.ndim)
+        if not reduce_dims:
             return tensor.abs() if reduction == "norm" else tensor
         if reduction == "sum":
-            return tensor.sum(dim=sum_dims, keepdim=keepdim)
+            return tensor.sum(dim=reduce_dims, keepdim=keepdim)
         if reduction == "mean":
-            return tensor.mean(dim=sum_dims, keepdim=keepdim)
+            return tensor.mean(dim=reduce_dims, keepdim=keepdim)
         if reduction == "norm":
-            return torch.linalg.vector_norm(tensor, dim=sum_dims, keepdim=keepdim)
+            return torch.linalg.vector_norm(tensor, dim=reduce_dims, keepdim=keepdim)
         raise ValueError(f"Unsupported NFT reduction: {reduction}")
 
     # =======================================================================
@@ -618,7 +623,7 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
         std_t_det: torch.Tensor,
         noise_level: torch.Tensor,
         target: torch.Tensor,
-        sum_type: str,
+        gather_type: str,
         *,
         pred: torch.Tensor,
         sample_type: str,
@@ -670,7 +675,7 @@ class EmbodiedNFTFSDPPolicy(EmbodiedFSDPActor):
             with torch.no_grad():
                 w = self._reduce_nft_tensor(
                     torch.abs(pred.double() - target.double()),
-                    sum_type,
+                    gather_type,
                     "mean",
                     keepdim=True,
                 )

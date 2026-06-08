@@ -140,9 +140,10 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
         device = next(self.transformer.parameters()).device
         model_dtype = next(self.transformer.parameters()).dtype
         x_t = nft_inputs["x_t"].to(device=device, dtype=model_dtype)
+        model_x_t = x_t.movedim(1, 2)
         timesteps = self._scheduler_to_model_timesteps(
             nft_inputs["timesteps"].to(device=device),
-            x_t,
+            model_x_t,
         )
         prompt_embeds = forward_inputs["prompt_embeds"].to(device=device, dtype=model_dtype)
         negative_prompt_embeds = forward_inputs.get("negative_prompt_embeds")
@@ -154,12 +155,13 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
             )
 
         v_theta = self._transformer_forward(
-            x_t,
+            model_x_t,
             timesteps,
             prompt_embeds,
             negative_prompt_embeds,
             self.config.guidance_scale,
         )
+        v_theta = v_theta.movedim(2, 1)
         return {"v_theta": v_theta}
 
     def obs_processor(self, env_obs: Any) -> list[str]:
@@ -241,7 +243,7 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
             dtype=final_latents.dtype,
         )
         forward_inputs = {
-            "nft_x0": final_latents.detach(),
+            "nft_x0": final_latents.movedim(2, 1).detach(),
             "nft_noise_level": torch.zeros(
                 final_latents.shape[0],
                 device=final_latents.device,

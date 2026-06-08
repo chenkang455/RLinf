@@ -93,10 +93,10 @@ class VideoOCRRewardBackend(OCRRewardBackend):
         self,
         use_gpu: bool = False,
         lang: str = "en",
-        frame_interval: int = 4,
+        frame_interval: int = -1,
     ):
         super().__init__(use_gpu=use_gpu, lang=lang)
-        self.frame_interval = max(1, int(frame_interval))
+        self.frame_interval = int(frame_interval)
 
     def score(
         self,
@@ -109,7 +109,20 @@ class VideoOCRRewardBackend(OCRRewardBackend):
         rewards = []
         for media, prompt in zip(media_array, prompts, strict=True):
             target = _extract_quoted_text(prompt)
-            rewards.append(self._score_media(media, target))
+            if isinstance(media, np.ndarray) and media.ndim == 4:
+                frames = media
+            else:
+                frames = [media]
+
+            frame_rewards = [self._score_image(frame, target) for frame in frames]
+            if self.frame_interval > 0:
+                chunks = [frame_rewards[:1]] + [
+                    frame_rewards[i : i + self.frame_interval]
+                    for i in range(1, len(frame_rewards), self.frame_interval)
+                ]
+                rewards.append([float(sum(chunk) / len(chunk)) for chunk in chunks])
+            else:
+                rewards.append(float(sum(frame_rewards) / len(frame_rewards)))
         rewards_tensor = torch.as_tensor(rewards, dtype=torch.float32)
         return {
             "avg": rewards_tensor,
@@ -117,21 +130,6 @@ class VideoOCRRewardBackend(OCRRewardBackend):
             "ocr": rewards_tensor,
             "accuracy": rewards_tensor,
         }
-
-    def _score_media(self, media: np.ndarray | Image.Image, target: str) -> float:
-        if isinstance(media, np.ndarray) and media.ndim == 4:
-            frames = media[:: self.frame_interval]
-        else:
-            frames = [media]
-
-        frame_rewards = []
-        for frame in frames:
-            reward = self._score_image(frame, target)
-            if reward > 0:
-                frame_rewards.append(reward)
-        if not frame_rewards:
-            return 0.0
-        return float(sum(frame_rewards) / len(frame_rewards))
 
 
 def _extract_quoted_text(prompt: str) -> str:

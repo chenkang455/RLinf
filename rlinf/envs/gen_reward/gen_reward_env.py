@@ -119,8 +119,10 @@ class GenRewardEnv(gym.Env):
                 f"Available keys: {sorted(scores)}"
             )
         rewards = scores[self.reward_key].float()
-        terminations = torch.ones(self.num_envs, dtype=torch.bool)
-        truncations = torch.zeros(self.num_envs, dtype=torch.bool)
+        truncations = torch.zeros_like(rewards, dtype=torch.bool)
+        terminations = torch.ones_like(rewards, dtype=torch.bool)
+        if rewards.ndim > 1:
+            terminations[..., :-1] = False
         episode = {
             "return": rewards.detach().float(),
             "episode_len": torch.ones(self.num_envs, dtype=torch.float32),
@@ -207,10 +209,8 @@ class GenRewardEnv(gym.Env):
         if torch.logical_or(terminations, truncations).any() and self.auto_reset:
             obs, _ = self.reset()
             self._last_capture_media = capture_media
-        return (
-            [obs],
-            rewards.unsqueeze(1),
-            terminations.unsqueeze(1),
-            truncations.unsqueeze(1),
-            [infos],
-        )
+        if rewards.ndim == 1:
+            rewards = rewards.unsqueeze(1)
+            terminations = terminations.unsqueeze(1)
+            truncations = truncations.unsqueeze(1)
+        return ([obs], rewards, terminations, truncations, [infos])

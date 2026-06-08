@@ -51,7 +51,7 @@ def build_reward_backend(cfg: Any) -> GenRewardBackend:
         return VideoOCRRewardBackend(
             use_gpu=bool(cfg_get(cfg, "use_gpu", False)),
             lang=str(cfg_get(cfg, "lang", "en")),
-            frame_interval=int(cfg_get(cfg, "frame_interval", 4)),
+            frame_interval=int(cfg_get(cfg, "frame_interval", -1)),
         )
     if reward_type == "pickscore":
         return PickScoreRewardBackend(device=device, dtype=dtype)

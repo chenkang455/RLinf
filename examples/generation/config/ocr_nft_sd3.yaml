@@ -72,7 +72,8 @@ algorithm:
   nft_xcur_source: resample
   nft_tau: [1.0, 0.001, 75, 200]
   recompute_v: False
-  nft_sum_type: token_level
+  nft_gather_type: action_level
+  nft_energy_reduction: mean
 
   sampling_params:
     do_sample: True
