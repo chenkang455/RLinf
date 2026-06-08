@@ -48,7 +48,8 @@ algorithm:
   logprob_type: token_level
   entropy_type: token_level
   update_epoch: 1
-  adv_type: grpo
+  adv_type: grpo_video
+  advantage_mode: video
   loss_type: embodied_nft
   loss_agg_func: "token-mean"
 
