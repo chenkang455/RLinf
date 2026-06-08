@@ -45,6 +45,7 @@ class Wan22_TI2V_5B_Config:
     init_lora_weights: str = "gaussian"
     compile_transformer_forward: bool = False
     compile_mode: str = "default"
+    max_generation_batch_size: int = 0
     target_modules: list[str] = field(
         default_factory=lambda: [
             "attn1.to_q",
@@ -221,7 +222,7 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
         guidance_scale = (
             self.config.eval_guidance_scale if is_eval else self.config.guidance_scale
         )
-        images, final_latents = self._denoise(
+        images, final_latents = self._denoise_batched(
             prompt_embeds=prompt_embeds,
             negative_prompt_embeds=negative_prompt_embeds,
             guidance_scale=guidance_scale,
@@ -259,6 +260,48 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
             "prev_values": None,
             "forward_inputs": forward_inputs,
         }
+
+    @torch.no_grad()
+    def _denoise_batched(
+        self,
+        *,
+        prompt_embeds: torch.Tensor,
+        negative_prompt_embeds: torch.Tensor | None,
+        guidance_scale: float,
+        num_steps: int,
+        generator=None,
+        latents=None,
+    ):
+        max_batch = int(self.config.max_generation_batch_size)
+        if max_batch <= 0 or prompt_embeds.shape[0] <= max_batch:
+            return self._denoise(
+                prompt_embeds=prompt_embeds,
+                negative_prompt_embeds=negative_prompt_embeds,
+                guidance_scale=guidance_scale,
+                num_steps=num_steps,
+                generator=generator,
+                latents=latents,
+            )
+
+        image_chunks, latent_chunks = [], []
+        for start in range(0, prompt_embeds.shape[0], max_batch):
+            end = start + max_batch
+            chunk_latents = latents[start:end] if isinstance(latents, torch.Tensor) else None
+            images, final_latents = self._denoise(
+                prompt_embeds=prompt_embeds[start:end],
+                negative_prompt_embeds=(
+                    None
+                    if negative_prompt_embeds is None
+                    else negative_prompt_embeds[start:end]
+                ),
+                guidance_scale=guidance_scale,
+                num_steps=num_steps,
+                generator=generator,
+                latents=chunk_latents,
+            )
+            image_chunks.append(images)
+            latent_chunks.append(final_latents)
+        return torch.cat(image_chunks, dim=0), torch.cat(latent_chunks, dim=0)
 
     @torch.no_grad()
     def _denoise(
