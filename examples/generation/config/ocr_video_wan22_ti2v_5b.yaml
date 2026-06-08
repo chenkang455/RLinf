@@ -164,7 +164,7 @@ actor:
       lora_rank: 32
       lora_alpha: 64
       lora_path: null
-      offload_auxiliary_modules: True
+      offload_auxiliary_modules: False
       max_generation_batch_size: 6
       compile_transformer_forward: True
       compile_mode: "default"
