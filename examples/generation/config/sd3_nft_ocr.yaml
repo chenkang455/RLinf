@@ -1,7 +1,7 @@
 defaults:
-  - model/wan22_ti2v_5b@actor.model
   - env/generation_reward@env.train
   - env/generation_reward@env.eval
+  - model/sd3@actor.model
   - training_backend/fsdp@actor.fsdp_config
   - weight_syncer/patch_syncer@weight_syncer
   - override hydra/job_logging: stdout
@@ -24,9 +24,9 @@ runner:
   logger:
     log_path: "../results"
     project_name: rlinf
-    experiment_name: "ocr_video_wan22_ti2v_5b_5frame_chunk2"
+    experiment_name: "ocr_nft_sd3_diffusionnft"
     logger_backends: ["tensorboard"]
-  max_epochs: 70
+  max_epochs: 200
   max_steps: -1
   only_eval: False
   val_check_interval: -1
@@ -44,12 +44,11 @@ algorithm:
   rollout_epoch: 6
   eval_rollout_epoch: 8
 
-  reward_type: action_level
+  reward_type: chunk_level
   logprob_type: token_level
   entropy_type: token_level
   update_epoch: 1
-  adv_type: grpo_video
-  advantage_mode: video
+  adv_type: grpo
   loss_type: embodied_nft
   loss_agg_func: "token-mean"
 
@@ -66,12 +65,12 @@ algorithm:
   nft_beta: 0.1
   adv_clip_max: 5.0
   dpo_beta: 1.0
+  max_drift: 1.0e9
   nft_weight_mode: adaptive
   nft_weight_scale: 1.0
   nft_target_space: x0
   nft_xcur_source: resample
-  nft_tau: 1.0
-  nft_clip_ratio: 0.1
+  nft_tau: [1.0, 0.001, 75, 200]
   recompute_v: False
   nft_gather_type: action_level
   nft_energy_reduction: mean
@@ -96,35 +95,31 @@ env:
     total_num_envs: 192
     group_size: ${algorithm.group_size}
     max_episode_steps: 1
-    max_steps_per_rollout_epoch: 2
-    video_cfg:
-      save_video: False
+    max_steps_per_rollout_epoch: 1
     dataset:
       type: "generation.text_dataset"
       path: "/mnt/public2/chenkang/wam_rl/video_rl/DiffusionNFT/dataset/ocr"
       split: "train"
     reward:
-      type: "generation.video_ocr"
+      type: "generation.ocr"
       key: "avg"
       use_gpu: False
       lang: "en"
-      frame_interval: 4
   eval:
     total_num_envs: 128
     group_size: 1
     max_episode_steps: 1
-    max_steps_per_rollout_epoch: 2
+    max_steps_per_rollout_epoch: 1
     is_eval: True
     dataset:
       type: "generation.text_dataset"
       path: "/mnt/public2/chenkang/wam_rl/video_rl/DiffusionNFT/dataset/ocr"
       split: "test"
     reward:
-      type: "generation.video_ocr"
+      type: "generation.ocr"
       key: "avg"
       use_gpu: False
       lang: "en"
-      frame_interval: 4
 
 rollout:
   group_name: "RolloutGroup"
@@ -140,38 +135,37 @@ rollout:
 actor:
   group_name: "ActorGroup"
   training_backend: "fsdp"
-  micro_batch_size: 4
+  micro_batch_size: 9
   global_batch_size: 576
   seed: 42
   enable_offload: False
 
   model:
-    model_path: "/mnt/public2/chenkang/wam_rl/checkpoints/Wan2.2-TI2V-5B-Diffusers"
+    model_path: "/mnt/public2/chenkang/wam_rl/video_rl/flow_grpo/models/stable-diffusion-3.5-medium"
     precision: "bf16"
-    num_action_chunks: 2
-    wan22_ti2v_5b:
+    sd3:
       rl_mode: nft
-      resolution: [512, 512]
-      num_frames: 5
+      resolution: 512
       num_steps: 10
-      eval_num_steps: 20
+      eval_num_steps: 40
       timestep_fraction: 0.99
       guidance_scale: 1.0
       eval_guidance_scale: 1.0
       cfg: False
-      max_sequence_length: 256
+      noise_level: 0.7
+      eval_noise_level: 0.0
+      train_sampler: dpm2
+      eval_sampler: ode
+      max_sequence_length: 128
       output_type: "pt"
       use_lora: True
       lora_rank: 32
       lora_alpha: 64
       lora_path: null
       offload_auxiliary_modules: False
-      max_generation_batch_size: 6
-      compile_transformer_forward: True
-      compile_mode: "default"
 
   optim:
-    lr: 4.0e-4
+    lr: 3.0e-4
     value_lr: 3.0e-4
     adam_beta1: 0.9
     adam_beta2: 0.999
