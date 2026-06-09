@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 import numpy as np
@@ -38,8 +39,8 @@ class TextDataset:
         dataset_index: int
         metadata: dict[str, Any]
 
-    `build_env_batch()` maps records to batched env observations with plural
-    keys, for example `task_descriptions`.
+    `records_to_env_obs()` maps records to batched env observations with
+    plural keys, for example `task_descriptions`.
     """
 
     records: EnvRecords
@@ -54,15 +55,37 @@ class TextDataset:
         """Return one canonical dataset record."""
         return self.records[index]
 
-    def build_env_batch(
+    def build_grouped_env_batch(
+        self,
+        group_indices: Any,
+        group_size: int,
+        num_envs: int,
+    ) -> EnvBatch:
+        """
+        Build one env batch from sampled group indices.
+
+        Each sampled record is repeated `group_size` times so GRPO samples in
+        the same group share the same condition.
+        """
+        records: EnvRecords = []
+        group_size = int(group_size)
+        num_envs = int(num_envs)
+        for index in group_indices:
+            record = self[int(index)]
+            records.extend(copy.deepcopy(record) for _ in range(group_size))
+            if len(records) >= num_envs:
+                break
+        env_records = records[:num_envs]
+        return self.records_to_env_obs(env_records), env_records
+
+    def records_to_env_obs(
         self,
         records: EnvRecords,
-    ) -> EnvBatch:
-        """Return `(env_obs, env_records)` from sampled records."""
-        env_obs = {
+    ) -> EnvObs:
+        """Convert aligned env records into rollout observations."""
+        return {
             "task_descriptions": [record["task_description"] for record in records]
         }
-        return env_obs, records
 
 
 class ImageConditionedDataset(TextDataset):
@@ -78,7 +101,7 @@ class ImageConditionedDataset(TextDataset):
         future_video_path: str | None
         future_video: np.ndarray with shape [time, height, width, channels]
 
-    `build_env_batch()` maps those to `main_images` and, when present,
+    `records_to_env_obs()` maps those to `main_images` and, when present,
     `future_video_paths` / `future_videos`.
     """
 
@@ -92,12 +115,12 @@ class ImageConditionedDataset(TextDataset):
             )
         return record
 
-    def build_env_batch(
+    def records_to_env_obs(
         self,
         records: EnvRecords,
-    ) -> EnvBatch:
-        """Return `(env_obs, env_records)` with image-conditioned observations."""
-        env_obs, env_records = super().build_env_batch(records)
+    ) -> EnvObs:
+        """Convert image-conditioned env records into rollout observations."""
+        env_obs = super().records_to_env_obs(records)
         env_obs["main_images"] = np.stack(
             [record["main_image"] for record in records],
             axis=0,
@@ -118,7 +141,7 @@ class ImageConditionedDataset(TextDataset):
                 [record["future_video"] for record in records],
                 axis=0,
             )
-        return env_obs, env_records
+        return env_obs
 
 
 __all__ = [

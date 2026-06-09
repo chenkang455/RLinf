@@ -29,7 +29,7 @@ class RewardBackend(Protocol):
 
     Args:
         outputs: Generated images/videos from the rollout side.
-        records: Reward records returned by `dataset.build_env_batch`.
+        records: Env records returned by `dataset.build_grouped_env_batch`.
 
     Returns:
         Score dict containing the configured `reward.key`, usually `avg`.

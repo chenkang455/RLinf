@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import copy
 from typing import Any
 
 import gym
@@ -90,13 +89,10 @@ class GenRewardEnv(gym.Env):
     def reset(self, *args, **kwargs) -> tuple[dict[str, Any], dict[str, Any]]:
         self._return_video = None
         group_indices = self._next_group_indices()
-        records = [copy.deepcopy(self.dataset[int(index)]) for index in group_indices]
-        repeated_records = []
-        for record in records:
-            repeated_records.extend(copy.deepcopy(record) for _ in range(self.group_size))
-        repeated_records = repeated_records[: self.num_envs]
-        self._env_obs, self._env_records = self.dataset.build_env_batch(
-            repeated_records
+        self._env_obs, self._env_records = self.dataset.build_grouped_env_batch(
+            group_indices=group_indices,
+            group_size=self.group_size,
+            num_envs=self.num_envs,
         )
         return self._env_obs, {}
 
