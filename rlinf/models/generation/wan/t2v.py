@@ -66,6 +66,11 @@ class Wan22T2VModel(Wan22Model):
         model_dtype = next(self.transformer.parameters()).dtype
         timesteps = self._prepare_denoise_timesteps(num_steps, device)
         height, width = self.config.resolution
+        if negative_prompt_embeds is not None:
+            negative_prompt_embeds = negative_prompt_embeds.to(
+                device=device,
+                dtype=model_dtype,
+            )
         latents = self.pipeline.prepare_latents(
             batch_size=prompt_embeds.shape[0],
             num_channels_latents=self.transformer.config.in_channels,
@@ -84,16 +89,11 @@ class Wan22T2VModel(Wan22Model):
                 t.expand(latents.shape[0]),
                 model_latents,
             )
-            negative_prompt_embeds_in = self._prepare_negative_prompt_embeds(
-                negative_prompt_embeds,
-                device=device,
-                dtype=model_dtype,
-            )
             noise_pred = self._transformer_forward(
                 model_latents,
                 timestep,
                 prompt_embeds.to(dtype=model_dtype),
-                negative_prompt_embeds_in,
+                negative_prompt_embeds,
                 guidance_scale,
             )
             latents = self.pipeline.scheduler.step(

@@ -93,6 +93,30 @@ class Wan22Model(torch.nn.Module, BasePolicy):
                 self.pipeline.image_encoder.to(device=device)
         return module
 
+    def obs_processor(self, env_obs: Any) -> tuple[list[str], dict[str, Any]]:
+        raise NotImplementedError
+
+    def nft_forward(
+        self,
+        forward_inputs: dict[str, torch.Tensor],
+        nft_inputs: dict[str, torch.Tensor],
+        **kwargs,
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def _denoise(
+        self,
+        *,
+        conditions: dict[str, Any],
+        prompt_embeds: torch.Tensor,
+        negative_prompt_embeds: torch.Tensor | None,
+        guidance_scale: float,
+        num_steps: int,
+        generator=None,
+        latents=None,
+    ):
+        raise NotImplementedError
+
     @staticmethod
     def _configure_torch_dynamo_for_compile() -> None:
         dynamo_config = torch._dynamo.config
@@ -110,7 +134,7 @@ class Wan22Model(torch.nn.Module, BasePolicy):
             return self.default_forward(**kwargs)
         if forward_type == ForwardType.NFT:
             return self.nft_forward(**kwargs)
-        raise NotImplementedError
+        raise ValueError(f"Unknown forward_type: {forward_type}")
 
     def default_forward(self, forward_inputs: dict[str, torch.Tensor], **kwargs):
         del kwargs
@@ -128,24 +152,6 @@ class Wan22Model(torch.nn.Module, BasePolicy):
             ),
             "values": None,
         }
-
-    def obs_processor(self, env_obs: Any) -> tuple[list[str], dict[str, Any]]:
-        raise NotImplementedError
-
-    def _prepare_negative_prompt_embeds(
-        self,
-        negative_prompt_embeds: torch.Tensor | None,
-        *,
-        device: torch.device,
-        dtype: torch.dtype,
-    ) -> torch.Tensor | None:
-        if negative_prompt_embeds is None:
-            if self.config.cfg:
-                raise ValueError(
-                    f"{self.__class__.__name__} cfg=True requires negative_prompt_embeds."
-                )
-            return None
-        return negative_prompt_embeds.to(device=device, dtype=dtype)
 
     def _prepare_nft_forward_inputs(
         self,
@@ -165,11 +171,12 @@ class Wan22Model(torch.nn.Module, BasePolicy):
             device=device,
             dtype=model_dtype,
         )
-        negative_prompt_embeds = self._prepare_negative_prompt_embeds(
-            forward_inputs.get("negative_prompt_embeds"),
-            device=device,
-            dtype=model_dtype,
-        )
+        negative_prompt_embeds = forward_inputs.get("negative_prompt_embeds")
+        if negative_prompt_embeds is not None:
+            negative_prompt_embeds = negative_prompt_embeds.to(
+                device=device,
+                dtype=model_dtype,
+            )
         return {
             "device": device,
             "model_dtype": model_dtype,
@@ -179,14 +186,6 @@ class Wan22Model(torch.nn.Module, BasePolicy):
             "prompt_embeds": prompt_embeds,
             "negative_prompt_embeds": negative_prompt_embeds,
         }
-
-    def nft_forward(
-        self,
-        forward_inputs: dict[str, torch.Tensor],
-        nft_inputs: dict[str, torch.Tensor],
-        **kwargs,
-    ) -> dict[str, Any]:
-        raise NotImplementedError
 
     @torch.no_grad()
     def encode_prompts(
@@ -348,19 +347,6 @@ class Wan22Model(torch.nn.Module, BasePolicy):
             torch.cat(latent_chunks, dim=0),
             denoise_info,
         )
-
-    def _denoise(
-        self,
-        *,
-        conditions: dict[str, Any],
-        prompt_embeds: torch.Tensor,
-        negative_prompt_embeds: torch.Tensor | None,
-        guidance_scale: float,
-        num_steps: int,
-        generator=None,
-        latents=None,
-    ):
-        raise NotImplementedError
 
     def _prepare_denoise_timesteps(
         self,

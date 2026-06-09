@@ -76,6 +76,11 @@ class Wan22TI2VModel(Wan22Model):
         device = prompt_embeds.device
         model_dtype = next(self.transformer.parameters()).dtype
         height, width = self.config.resolution
+        if negative_prompt_embeds is not None:
+            negative_prompt_embeds = negative_prompt_embeds.to(
+                device=device,
+                dtype=model_dtype,
+            )
         image_embeds = self.encode_image_condition(image_condition)
         timesteps = self._prepare_denoise_timesteps(num_steps, device)
 
@@ -107,16 +112,11 @@ class Wan22TI2VModel(Wan22Model):
                 t.expand(latents.shape[0]),
                 latents.to(dtype=model_dtype),
             )
-            negative_prompt_embeds_in = self._prepare_negative_prompt_embeds(
-                negative_prompt_embeds,
-                device=device,
-                dtype=model_dtype,
-            )
             noise_pred = self._transformer_forward_i2v(
                 latent_model_input,
                 timestep,
                 prompt_embeds.to(dtype=model_dtype),
-                negative_prompt_embeds_in,
+                negative_prompt_embeds,
                 image_embeds.to(dtype=model_dtype),
                 guidance_scale,
             )
