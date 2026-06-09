@@ -1,6 +1,6 @@
 defaults:
-  - env/generation_reward@env.train
-  - env/generation_reward@env.eval
+  - env/ocr@env.train
+  - env/ocr@env.eval
   - model/sd3@actor.model
   - training_backend/fsdp@actor.fsdp_config
   - weight_syncer/patch_syncer@weight_syncer

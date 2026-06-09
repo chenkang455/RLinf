@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
-from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 from rlinf.envs.gen_reward.datasets import EnvRecord, ImageConditionedDataset
 from rlinf.envs.gen_reward.utils import media_to_uint8_nhwc
@@ -32,38 +32,29 @@ class LeRobotImageConditionedDataset(ImageConditionedDataset):
     def __init__(
         self,
         dataset: Any,
-        image_keys: tuple[str, ...],
-        task_key: str,
     ):
         self.dataset = dataset
-        self.image_keys = image_keys
-        self.task_key = task_key
 
     @classmethod
     def from_config(cls, cfg: Any) -> "LeRobotImageConditionedDataset":
-        image_keys = cls.default_image_keys
         future_times = [float(timestamp) for timestamp in cfg.future_times]
         dataset = LeRobotDataset(
             str(cfg.repo_id),
             root=cfg.root,
             episodes=getattr(cfg, "episodes", None),
-            delta_timestamps={key: future_times for key in image_keys},
+            delta_timestamps={key: future_times for key in cls.default_image_keys},
             video_backend=getattr(cfg, "video_backend", "pyav"),
         )
-        return cls(
-            dataset=dataset,
-            image_keys=image_keys,
-            task_key=str(getattr(cfg, "task_key", cls.default_task_key)),
-        )
+        return cls(dataset=dataset)
 
     def __len__(self) -> int:
         return len(self.dataset)
 
     def __getitem__(self, index: int) -> EnvRecord:
         sample = self.dataset[index]
-        videos = [media_to_uint8_nhwc(sample[key]) for key in self.image_keys]
+        videos = [media_to_uint8_nhwc(sample[key]) for key in self.default_image_keys]
         video = videos[0] if len(videos) == 1 else self.compose_videos(videos)
-        task = sample.get(self.task_key, "")
+        task = sample.get(self.default_task_key, "")
         if isinstance(task, (list, tuple)):
             task = task[0] if task else ""
         return {

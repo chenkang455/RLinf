@@ -1,6 +1,6 @@
 defaults:
-  - env/generation_reward@env.train
-  - env/generation_reward@env.eval
+  - env/ocr_video@env.train
+  - env/ocr_video@env.eval
   - model/wan22_ti2v_5b@actor.model
   - training_backend/fsdp@actor.fsdp_config
   - weight_syncer/patch_syncer@weight_syncer

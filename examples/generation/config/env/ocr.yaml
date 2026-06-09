@@ -13,7 +13,7 @@ is_eval: False
 video_cfg:
   save_video: False
   info_on_video: False
-  video_base_dir: ${runner.logger.log_path}/video/generation_reward
+  video_base_dir: ${runner.logger.log_path}/video/ocr_reward
   image_frame_repeat: 8
   num_capture_samples: 3
 

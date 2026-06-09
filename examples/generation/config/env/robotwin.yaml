@@ -13,17 +13,17 @@ is_eval: False
 video_cfg:
   save_video: False
   info_on_video: False
-  video_base_dir: ${runner.logger.log_path}/video/robotwin_video_reward
+  video_base_dir: ${runner.logger.log_path}/video/video_similarity_reward
   image_frame_repeat: 8
   num_capture_samples: 3
 
 dataset:
   type: "embodied.robotwin_dataset"
-  data_root: "/mnt/public2/chenkang/wam_rl/RoboTwin/data"
-  metadata_path: "robotwin_videos.csv"
-  prompt_key: "caption"
-  image_size: [480, 640]
+  repo_id: "local/vidar_robotwin_click_bell"
+  root: "/mnt/public2/chenkang/wam_rl/video_rl/vidar/vidar-robotwin/data_lerobot/click_bell/aloha_vidar_10"
+  future_times: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+  video_backend: "pyav"
 
 reward:
-  type: "generation.mock"
+  type: "embodied.video_similarity"
   key: "avg"
