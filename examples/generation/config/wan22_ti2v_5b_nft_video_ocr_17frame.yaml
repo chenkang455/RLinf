@@ -151,6 +151,7 @@ actor:
     # 1 first-frame chunk + ceil((num_frames - 1) / frame_interval).
     num_action_chunks: 5
     wan22_ti2v_5b:
+      condition_mode: "t2v"
       rl_mode: nft
       resolution: [512, 512]
       num_frames: 17

@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
@@ -25,9 +25,10 @@ from rlinf.models.generation.sd3.utils import prompt_list
 
 
 @dataclass
-class Wan22_TI2V_5B_Config:
+class Wan22Config:
     model_path: str = ""
-    resolution: int | list[int] = 480
+    condition_mode: Literal["t2v", "ti2v"] = "t2v"
+    resolution: list[int] = field(default_factory=lambda: [480, 480])
     num_frames: int = 1
     num_steps: int = 8
     eval_num_steps: int = 20
@@ -64,20 +65,11 @@ class Wan22_TI2V_5B_Config:
     )
     offload_auxiliary_modules: bool = True
 
-    def update_from_dict(self, config_dict: Mapping[str, Any] | None):
-        if not config_dict:
-            return
-        unknown_fields = sorted(set(config_dict) - set(self.__dataclass_fields__))
-        if unknown_fields:
-            raise ValueError(f"Unknown Wan22_TI2V_5B config fields: {unknown_fields}")
-        for key, value in config_dict.items():
-            setattr(self, key, value)
 
+class Wan22Model(torch.nn.Module, BasePolicy):
+    """Shared Wan 2.2 video policy logic for RL/NFT rollout."""
 
-class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
-    """Wan 2.x text-to-video policy with DiffusionNFT-style clean latent rollout."""
-
-    def __init__(self, config: Wan22_TI2V_5B_Config, pipeline: Any):
+    def __init__(self, config: Wan22Config, pipeline: Any):
         super().__init__()
         self.config = config
         self.model_path = str(config.model_path)
@@ -87,7 +79,9 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
 
     @property
     def _no_split_modules(self) -> list[str]:
-        return list(getattr(self.transformer, "_no_split_modules", ["WanTransformerBlock"]))
+        return list(
+            getattr(self.transformer, "_no_split_modules", ["WanTransformerBlock"])
+        )
 
     def to(self, device):
         module = super().to(device)
@@ -95,6 +89,8 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
         if device.type == "cpu":
             self.pipeline.vae.to(device=device)
             self.pipeline.text_encoder.to(device=device)
+            if getattr(self.pipeline, "image_encoder", None) is not None:
+                self.pipeline.image_encoder.to(device=device)
         return module
 
     @staticmethod
@@ -133,48 +129,64 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
             "values": None,
         }
 
-    def nft_forward(
+    def obs_processor(self, env_obs: Any) -> tuple[list[str], dict[str, Any]]:
+        raise NotImplementedError
+
+    def _prepare_negative_prompt_embeds(
+        self,
+        negative_prompt_embeds: torch.Tensor | None,
+        *,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor | None:
+        if negative_prompt_embeds is None:
+            if self.config.cfg:
+                raise ValueError(
+                    f"{self.__class__.__name__} cfg=True requires negative_prompt_embeds."
+                )
+            return None
+        return negative_prompt_embeds.to(device=device, dtype=dtype)
+
+    def _prepare_nft_forward_inputs(
         self,
         forward_inputs: dict[str, torch.Tensor],
         nft_inputs: dict[str, torch.Tensor],
-        **kwargs,
-    ) -> dict[str, Any]:
-        del kwargs
-        device = next(self.transformer.parameters()).device
-        model_dtype = next(self.transformer.parameters()).dtype
+    ) -> dict[str, torch.Tensor | torch.device | torch.dtype]:
+        parameter = next(self.transformer.parameters())
+        device = parameter.device
+        model_dtype = parameter.dtype
         x_t = nft_inputs["x_t"].to(device=device, dtype=model_dtype)
         model_x_t = x_t.movedim(1, 2)
         timesteps = self._scheduler_to_model_timesteps(
             nft_inputs["timesteps"].to(device=device),
             model_x_t,
         )
-        prompt_embeds = forward_inputs["prompt_embeds"].to(device=device, dtype=model_dtype)
-        negative_prompt_embeds = forward_inputs.get("negative_prompt_embeds")
-        if self.config.cfg:
-            if negative_prompt_embeds is None:
-                raise ValueError("Wan22_TI2V_5B cfg=True requires negative_prompt_embeds.")
-            negative_prompt_embeds = negative_prompt_embeds.to(
-                device=device, dtype=model_dtype
-            )
-
-        v_theta = self._transformer_forward(
-            model_x_t,
-            timesteps,
-            prompt_embeds,
-            negative_prompt_embeds,
-            self.config.guidance_scale,
+        prompt_embeds = forward_inputs["prompt_embeds"].to(
+            device=device,
+            dtype=model_dtype,
         )
-        v_theta = v_theta.movedim(2, 1)
-        return {"v_theta": v_theta}
+        negative_prompt_embeds = self._prepare_negative_prompt_embeds(
+            forward_inputs.get("negative_prompt_embeds"),
+            device=device,
+            dtype=model_dtype,
+        )
+        return {
+            "device": device,
+            "model_dtype": model_dtype,
+            "x_t": x_t,
+            "model_x_t": model_x_t,
+            "timesteps": timesteps,
+            "prompt_embeds": prompt_embeds,
+            "negative_prompt_embeds": negative_prompt_embeds,
+        }
 
-    def obs_processor(self, env_obs: Any) -> list[str]:
-        if isinstance(env_obs, Mapping):
-            for key in ("prompts", "prompt", "texts", "text", "task_descriptions"):
-                if key in env_obs:
-                    return prompt_list(env_obs[key])
-        if isinstance(env_obs, Sequence) and not isinstance(env_obs, str):
-            return [str(prompt) for prompt in env_obs]
-        return [str(env_obs)]
+    def nft_forward(
+        self,
+        forward_inputs: dict[str, torch.Tensor],
+        nft_inputs: dict[str, torch.Tensor],
+        **kwargs,
+    ) -> dict[str, Any]:
+        raise NotImplementedError
 
     @torch.no_grad()
     def encode_prompts(
@@ -185,20 +197,24 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         device = next(self.transformer.parameters()).device
         self.pipeline.text_encoder.to(device=device)
+        if negative_prompts is None:
+            negative_prompt_input = None
+        else:
+            negative_prompt_input = prompt_list(negative_prompts)
         prompt_embeds, negative_prompt_embeds = self.pipeline.encode_prompt(
             prompt=prompt_list(prompts),
-            negative_prompt=(
-                None if negative_prompts is None else prompt_list(negative_prompts)
-            ),
+            negative_prompt=negative_prompt_input,
             do_classifier_free_guidance=self.config.cfg,
             num_videos_per_prompt=1,
             max_sequence_length=self.config.max_sequence_length,
             device=device,
             dtype=next(self.transformer.parameters()).dtype,
         )
-        return prompt_embeds.to(device), (
-            None if negative_prompt_embeds is None else negative_prompt_embeds.to(device)
-        )
+        if negative_prompt_embeds is None:
+            negative_prompt_embeds_out = None
+        else:
+            negative_prompt_embeds_out = negative_prompt_embeds.to(device)
+        return prompt_embeds.to(device), negative_prompt_embeds_out
 
     @torch.no_grad()
     def predict_action_batch(
@@ -209,7 +225,7 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
         **kwargs,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         del compute_values
-        prompts = self.obs_processor(env_obs)
+        prompts, conditions = self.obs_processor(env_obs)
         negative_prompts = kwargs.get("negative_prompts") or [""] * len(prompts)
         prompt_embeds, negative_prompt_embeds = self.encode_prompts(
             prompts,
@@ -220,11 +236,14 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
             torch.cuda.empty_cache()
 
         is_eval = mode == "eval"
-        num_steps = self.config.eval_num_steps if is_eval else self.config.num_steps
-        guidance_scale = (
-            self.config.eval_guidance_scale if is_eval else self.config.guidance_scale
-        )
-        images, final_latents = self._denoise_batched(
+        if is_eval:
+            num_steps = self.config.eval_num_steps
+            guidance_scale = self.config.eval_guidance_scale
+        else:
+            num_steps = self.config.num_steps
+            guidance_scale = self.config.guidance_scale
+        images, final_latents, denoise_info = self._denoise_batched(
+            conditions=conditions,
             prompt_embeds=prompt_embeds,
             negative_prompt_embeds=negative_prompt_embeds,
             guidance_scale=guidance_scale,
@@ -256,6 +275,8 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
         }
         if negative_prompt_embeds is not None:
             forward_inputs["negative_prompt_embeds"] = negative_prompt_embeds.detach()
+        for key, value in denoise_info.items():
+            forward_inputs[key] = value.detach()
 
         return images, {
             "prev_logprobs": old_logprobs,
@@ -267,6 +288,7 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
     def _denoise_batched(
         self,
         *,
+        conditions: dict[str, Any],
         prompt_embeds: torch.Tensor,
         negative_prompt_embeds: torch.Tensor | None,
         guidance_scale: float,
@@ -277,6 +299,7 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
         max_batch = int(self.config.max_generation_batch_size)
         if max_batch <= 0 or prompt_embeds.shape[0] <= max_batch:
             return self._denoise(
+                conditions=conditions,
                 prompt_embeds=prompt_embeds,
                 negative_prompt_embeds=negative_prompt_embeds,
                 guidance_scale=guidance_scale,
@@ -285,17 +308,26 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
                 latents=latents,
             )
 
-        image_chunks, latent_chunks = [], []
+        image_chunks = []
+        latent_chunks = []
+        denoise_info_chunks = []
         for start in range(0, prompt_embeds.shape[0], max_batch):
             end = start + max_batch
-            chunk_latents = latents[start:end] if isinstance(latents, torch.Tensor) else None
-            images, final_latents = self._denoise(
+            if negative_prompt_embeds is not None:
+                chunk_negative_prompt_embeds = negative_prompt_embeds[start:end]
+            else:
+                chunk_negative_prompt_embeds = None
+            if latents is not None:
+                chunk_latents = latents[start:end]
+            else:
+                chunk_latents = None
+            chunk_conditions = {
+                key: value[start:end] for key, value in conditions.items()
+            }
+            images, final_latents, denoise_info = self._denoise(
+                conditions=chunk_conditions,
                 prompt_embeds=prompt_embeds[start:end],
-                negative_prompt_embeds=(
-                    None
-                    if negative_prompt_embeds is None
-                    else negative_prompt_embeds[start:end]
-                ),
+                negative_prompt_embeds=chunk_negative_prompt_embeds,
                 guidance_scale=guidance_scale,
                 num_steps=num_steps,
                 generator=generator,
@@ -303,12 +335,24 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
             )
             image_chunks.append(images)
             latent_chunks.append(final_latents)
-        return torch.cat(image_chunks, dim=0), torch.cat(latent_chunks, dim=0)
+            denoise_info_chunks.append(denoise_info)
+        denoise_info = {}
+        if denoise_info_chunks:
+            for key in denoise_info_chunks[0]:
+                denoise_info[key] = torch.cat(
+                    [chunk[key] for chunk in denoise_info_chunks],
+                    dim=0,
+                )
+        return (
+            torch.cat(image_chunks, dim=0),
+            torch.cat(latent_chunks, dim=0),
+            denoise_info,
+        )
 
-    @torch.no_grad()
     def _denoise(
         self,
         *,
+        conditions: dict[str, Any],
         prompt_embeds: torch.Tensor,
         negative_prompt_embeds: torch.Tensor | None,
         guidance_scale: float,
@@ -316,86 +360,17 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
         generator=None,
         latents=None,
     ):
-        device = prompt_embeds.device
-        model_dtype = next(self.transformer.parameters()).dtype
+        raise NotImplementedError
+
+    def _prepare_denoise_timesteps(
+        self,
+        num_steps: int,
+        device: torch.device,
+    ) -> torch.Tensor:
         self.pipeline.scheduler.set_timesteps(num_steps, device=device)
         if hasattr(self.pipeline.scheduler, "sigmas"):
             self.pipeline.scheduler.sigmas = self.pipeline.scheduler.sigmas.to(device)
-        timesteps = self.pipeline.scheduler.timesteps
-        height, width = self._height_width()
-        latents = self.pipeline.prepare_latents(
-            batch_size=prompt_embeds.shape[0],
-            num_channels_latents=self.transformer.config.in_channels,
-            height=height,
-            width=width,
-            num_frames=self.config.num_frames,
-            dtype=torch.float32,
-            device=device,
-            generator=generator,
-            latents=latents,
-        )
-        self.pipeline._num_timesteps = len(timesteps)
-        for t in timesteps:
-            model_latents = latents.to(dtype=model_dtype)
-            timestep = self._scheduler_to_model_timesteps(
-                t.expand(latents.shape[0]), model_latents
-            )
-            noise_pred = self._transformer_forward(
-                model_latents,
-                timestep,
-                prompt_embeds.to(dtype=model_dtype),
-                (
-                    None
-                    if negative_prompt_embeds is None
-                    else negative_prompt_embeds.to(dtype=model_dtype)
-                ),
-                guidance_scale,
-            )
-            latents = self.pipeline.scheduler.step(
-                noise_pred.float(),
-                t,
-                latents.float(),
-                return_dict=False,
-            )[0]
-        videos = self.decode_latents(latents, output_type=self.config.output_type)
-        images = self._video_to_image_batch(videos)
-        if self.config.offload_auxiliary_modules:
-            self.pipeline.vae.to(device="cpu")
-            torch.cuda.empty_cache()
-        return images, latents
-
-    def _video_to_image_batch(self, videos):
-        if self.config.num_frames != 1:
-            return videos
-        if isinstance(videos, torch.Tensor) and videos.ndim == 5:
-            if videos.shape[1] != 1:
-                raise ValueError(f"Expected single-frame video output, got shape {videos.shape}.")
-            return videos[:, 0]
-        return videos
-
-    def _transformer_forward(
-        self,
-        latents: torch.Tensor,
-        timestep: torch.Tensor,
-        prompt_embeds: torch.Tensor,
-        negative_prompt_embeds: torch.Tensor | None,
-        guidance_scale: float,
-    ) -> torch.Tensor:
-        noise_pred = self._call_transformer(
-            hidden_states=latents,
-            timestep=timestep,
-            encoder_hidden_states=prompt_embeds,
-            return_dict=False,
-        )[0]
-        if self.config.cfg:
-            noise_uncond = self._call_transformer(
-                hidden_states=latents,
-                timestep=timestep,
-                encoder_hidden_states=negative_prompt_embeds,
-                return_dict=False,
-            )[0]
-            noise_pred = noise_uncond + guidance_scale * (noise_pred - noise_uncond)
-        return noise_pred
+        return self.pipeline.scheduler.timesteps
 
     def _call_transformer(self, **kwargs):
         if not self.config.compile_transformer_forward:
@@ -426,15 +401,6 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
             -1, 1, 1, 1
         )
         return expanded.flatten(1)
-
-    def _height_width(self) -> tuple[int, int]:
-        resolution = self.config.resolution
-        if isinstance(resolution, Sequence) and not isinstance(resolution, str):
-            if len(resolution) != 2:
-                raise ValueError("Wan22_TI2V_5B resolution list must be [height, width].")
-            return int(resolution[0]), int(resolution[1])
-        value = int(resolution)
-        return value, value
 
     @torch.no_grad()
     def decode_latents(self, latents: torch.Tensor, output_type: str = "pt"):
@@ -476,3 +442,6 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
         wan_config = dict(config)
         wan_config.pop("model_path", None)
         return {"model_path": self.model_path, "wan22_ti2v_5b": wan_config}
+
+
+__all__ = ["Wan22Config", "Wan22Model"]
