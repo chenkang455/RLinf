@@ -206,7 +206,6 @@ def compute_grpo_dynamic_advantages(
     Returns:
         advantages: Shape [seq_len, num_sequence]
     """
-    advantage_mode = advantage_mode or "turn"
     num_sequence = len(idx_to_traj)
 
     rewards_flat = rewards.squeeze(-1)
