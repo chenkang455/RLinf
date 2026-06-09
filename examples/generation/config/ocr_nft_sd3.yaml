@@ -1,7 +1,7 @@
 defaults:
-  - env/image_reward@env.train
-  - env/image_reward@env.eval
   - model/sd3@actor.model
+  - env/generation_reward@env.train
+  - env/generation_reward@env.eval
   - training_backend/fsdp@actor.fsdp_config
   - weight_syncer/patch_syncer@weight_syncer
   - override hydra/job_logging: stdout

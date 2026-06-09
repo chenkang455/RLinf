@@ -61,7 +61,7 @@ class OCRRewardBackend(GenRewardBackend):
             target = extract_quoted_text(prompt)
             rewards.append(self._score_image(image, target))
         rewards_tensor = torch.as_tensor(rewards, dtype=torch.float32)
-        return {"avg": rewards_tensor, "ocr": rewards_tensor, "accuracy": rewards_tensor}
+        return {"avg": rewards_tensor, "ocr": rewards_tensor}
 
     def _score_image(
         self,

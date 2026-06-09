@@ -63,12 +63,7 @@ class VideoOCRRewardBackend(OCRRewardBackend):
                 rewards.append(float(sum(frame_rewards) / len(frame_rewards)))
 
         rewards_tensor = torch.as_tensor(rewards, dtype=torch.float32)
-        return {
-            "avg": rewards_tensor,
-            "video_ocr": rewards_tensor,
-            "ocr": rewards_tensor,
-            "accuracy": rewards_tensor,
-        }
+        return {"avg": rewards_tensor, "video_ocr": rewards_tensor}
 
 
 def build_reward_backend(cfg: Any) -> VideoOCRRewardBackend:

@@ -24,7 +24,7 @@ runner:
   logger:
     log_path: "../results"
     project_name: rlinf
-    experiment_name: "ocr_video_wan22_ti2v_5b_g6_re12_tau05_70_clip01_lr3e4"
+    experiment_name: "ocr_video_wan22_ti2v_5b_5frame_chunk2"
     logger_backends: ["tensorboard"]
   max_epochs: 70
   max_steps: -1
@@ -96,7 +96,7 @@ env:
     total_num_envs: 192
     group_size: ${algorithm.group_size}
     max_episode_steps: 1
-    max_steps_per_rollout_epoch: 5
+    max_steps_per_rollout_epoch: 2
     video_cfg:
       save_video: False
     dataset:
@@ -113,7 +113,7 @@ env:
     total_num_envs: 128
     group_size: 1
     max_episode_steps: 1
-    max_steps_per_rollout_epoch: 5
+    max_steps_per_rollout_epoch: 2
     is_eval: True
     dataset:
       type: "generation.text_dataset"
@@ -148,12 +148,11 @@ actor:
   model:
     model_path: "/mnt/public2/chenkang/wam_rl/checkpoints/Wan2.2-TI2V-5B-Diffusers"
     precision: "bf16"
-    # 1 first-frame chunk + ceil((num_frames - 1) / frame_interval).
-    num_action_chunks: 5
+    num_action_chunks: 2
     wan22_ti2v_5b:
       rl_mode: nft
       resolution: [512, 512]
-      num_frames: 17
+      num_frames: 5
       num_steps: 10
       eval_num_steps: 20
       timestep_fraction: 0.99
