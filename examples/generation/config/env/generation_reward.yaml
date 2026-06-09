@@ -18,7 +18,7 @@ video_cfg:
   num_capture_samples: 3
 
 dataset:
-  type: "generation.text_dataset"
+  type: "generation.ocr_dataset"
   path: "/mnt/public2/chenkang/wam_rl/video_rl/flow_grpo/dataset/ocr"
   split: "train"
 

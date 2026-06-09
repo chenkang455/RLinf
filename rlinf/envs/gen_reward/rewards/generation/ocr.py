@@ -20,16 +20,15 @@ import numpy as np
 import torch
 from PIL import Image
 
-from rlinf.envs.gen_reward import GenRewardBackend
+from rlinf.envs.gen_reward.rewards import RewardBackend
 from rlinf.envs.gen_reward.utils import (
     cfg_get,
     extract_quoted_text,
     media_to_uint8_nhwc,
-    text_condition_from_record,
 )
 
 
-class OCRRewardBackend(GenRewardBackend):
+class OCRRewardBackend(RewardBackend):
     def __init__(self, use_gpu: bool = False, lang: str = "en"):
         try:
             from Levenshtein import distance
@@ -49,16 +48,27 @@ class OCRRewardBackend(GenRewardBackend):
             show_log=False,
         )
 
+    @classmethod
+    def from_config(cls, cfg: Any) -> "OCRRewardBackend":
+        return cls(
+            use_gpu=bool(cfg_get(cfg, "use_gpu", False)),
+            lang=str(cfg_get(cfg, "lang", "en")),
+        )
+
     def score(
         self,
         outputs: torch.Tensor | np.ndarray | list[Any],
         records: list[dict[str, Any]],
     ) -> dict[str, torch.Tensor]:
-        prompts = [text_condition_from_record(record) for record in records]
+        task_descriptions = [record["task_description"] for record in records]
         image_array = media_to_uint8_nhwc(outputs)
         rewards = []
-        for image, prompt in zip(image_array, prompts, strict=True):
-            target = extract_quoted_text(prompt)
+        for image, task_description in zip(
+            image_array,
+            task_descriptions,
+            strict=True,
+        ):
+            target = extract_quoted_text(task_description)
             rewards.append(self._score_image(image, target))
         rewards_tensor = torch.as_tensor(rewards, dtype=torch.float32)
         return {"avg": rewards_tensor, "ocr": rewards_tensor}
@@ -92,11 +102,7 @@ class OCRRewardBackend(GenRewardBackend):
         return float(1.0 - dist / len(target))
 
 
-def build_reward_backend(cfg: Any) -> OCRRewardBackend:
-    return OCRRewardBackend(
-        use_gpu=bool(cfg_get(cfg, "use_gpu", False)),
-        lang=str(cfg_get(cfg, "lang", "en")),
-    )
+REWARD_CLS = OCRRewardBackend
 
 
-__all__ = ["OCRRewardBackend", "build_reward_backend"]
+__all__ = ["OCRRewardBackend", "REWARD_CLS"]

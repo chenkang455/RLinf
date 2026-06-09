@@ -24,7 +24,6 @@ from rlinf.envs.gen_reward.utils import (
     cfg_get,
     extract_quoted_text,
     media_to_uint8_nhwc,
-    text_condition_from_record,
 )
 
 
@@ -38,16 +37,28 @@ class VideoOCRRewardBackend(OCRRewardBackend):
         super().__init__(use_gpu=use_gpu, lang=lang)
         self.frame_interval = int(frame_interval)
 
+    @classmethod
+    def from_config(cls, cfg: Any) -> "VideoOCRRewardBackend":
+        return cls(
+            use_gpu=bool(cfg_get(cfg, "use_gpu", False)),
+            lang=str(cfg_get(cfg, "lang", "en")),
+            frame_interval=int(cfg_get(cfg, "frame_interval", -1)),
+        )
+
     def score(
         self,
         outputs: torch.Tensor | np.ndarray | list[Any],
         records: list[dict[str, Any]],
     ) -> dict[str, torch.Tensor]:
-        prompts = [text_condition_from_record(record) for record in records]
+        task_descriptions = [record["task_description"] for record in records]
         media_array = media_to_uint8_nhwc(outputs)
         rewards = []
-        for media, prompt in zip(media_array, prompts, strict=True):
-            target = extract_quoted_text(prompt)
+        for media, task_description in zip(
+            media_array,
+            task_descriptions,
+            strict=True,
+        ):
+            target = extract_quoted_text(task_description)
             if isinstance(media, np.ndarray) and media.ndim == 4:
                 frames = media
             else:
@@ -66,12 +77,7 @@ class VideoOCRRewardBackend(OCRRewardBackend):
         return {"avg": rewards_tensor, "video_ocr": rewards_tensor}
 
 
-def build_reward_backend(cfg: Any) -> VideoOCRRewardBackend:
-    return VideoOCRRewardBackend(
-        use_gpu=bool(cfg_get(cfg, "use_gpu", False)),
-        lang=str(cfg_get(cfg, "lang", "en")),
-        frame_interval=int(cfg_get(cfg, "frame_interval", -1)),
-    )
+REWARD_CLS = VideoOCRRewardBackend
 
 
-__all__ = ["VideoOCRRewardBackend", "build_reward_backend"]
+__all__ = ["REWARD_CLS", "VideoOCRRewardBackend"]

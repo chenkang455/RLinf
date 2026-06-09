@@ -100,7 +100,7 @@ env:
     video_cfg:
       save_video: False
     dataset:
-      type: "generation.text_dataset"
+      type: "generation.ocr_dataset"
       path: "/mnt/public2/chenkang/wam_rl/video_rl/DiffusionNFT/dataset/ocr"
       split: "train"
     reward:
@@ -116,7 +116,7 @@ env:
     max_steps_per_rollout_epoch: 2
     is_eval: True
     dataset:
-      type: "generation.text_dataset"
+      type: "generation.ocr_dataset"
       path: "/mnt/public2/chenkang/wam_rl/video_rl/DiffusionNFT/dataset/ocr"
       split: "test"
     reward:

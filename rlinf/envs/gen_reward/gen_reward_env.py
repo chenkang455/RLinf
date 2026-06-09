@@ -23,8 +23,9 @@ import torch
 
 from rlinf.envs.utils import put_text_on_image
 
-from . import GenRewardBackend, build_reward_backend, build_reward_dataset
-from .utils import cfg_get, cfg_require, media_to_uint8_nhwc, obs_from_records
+from . import build_reward_backend, build_reward_dataset
+from .rewards import RewardBackend
+from .utils import cfg_get, cfg_require, media_to_uint8_nhwc
 
 
 class GenRewardEnv(gym.Env):
@@ -57,7 +58,7 @@ class GenRewardEnv(gym.Env):
         self.dataset = build_reward_dataset(cfg_require(cfg, "dataset"))
         reward_cfg = cfg_require(cfg, "reward")
         self.reward_key = str(cfg_get(reward_cfg, "key", "avg"))
-        self.reward_backend: GenRewardBackend = build_reward_backend(reward_cfg)
+        self.reward_backend: RewardBackend = build_reward_backend(reward_cfg)
         # video capture settings
         video_cfg = cfg_get(cfg, "video_cfg", {})
         self.image_frame_repeat = max(
@@ -94,8 +95,9 @@ class GenRewardEnv(gym.Env):
         for record in records:
             repeated_records.extend(copy.deepcopy(record) for _ in range(self.group_size))
         repeated_records = repeated_records[: self.num_envs]
-        self._env_records = repeated_records
-        self._env_obs = obs_from_records(repeated_records)
+        self._env_obs, self._env_records = self.dataset.build_env_batch(
+            repeated_records
+        )
         return self._env_obs, {}
 
     def step(
@@ -154,7 +156,7 @@ class GenRewardEnv(gym.Env):
         for batch_idx, task_description in enumerate(
             task_descriptions[: media.shape[0]]
         ):
-            lines = [f"prompt: {task_description}"]
+            lines = [f"task: {task_description}"]
             for frame_idx in range(media.shape[1]):
                 media[batch_idx, frame_idx] = put_text_on_image(
                     media[batch_idx, frame_idx],

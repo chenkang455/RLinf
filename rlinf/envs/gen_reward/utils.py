@@ -14,9 +14,7 @@
 
 from __future__ import annotations
 
-import json
 import re
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -46,43 +44,6 @@ def normalize_type(value: Any, prefixes: tuple[str, ...] = ()) -> str:
         if type_name.startswith(prefix):
             return type_name[len(prefix) :]
     return type_name
-
-
-def parse_torch_dtype(value: Any) -> torch.dtype:
-    dtype = str(value).lower()
-    if dtype in {"bf16", "bfloat16"}:
-        return torch.bfloat16
-    if dtype in {"fp16", "float16"}:
-        return torch.float16
-    return torch.float32
-
-
-def text_condition_from_record(record: dict[str, Any]) -> str:
-    for key in ("task_description", "prompt", "caption", "instruction"):
-        value = record.get(key, "")
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return ""
-
-
-def metadata_from_record(record: dict[str, Any]) -> dict[str, Any]:
-    return {
-        key: value
-        for key, value in record.items()
-        if key not in {"main_image", "condition_image"}
-    }
-
-
-def obs_from_records(records: list[dict[str, Any]]) -> dict[str, Any]:
-    obs: dict[str, Any] = {
-        "task_descriptions": [text_condition_from_record(record) for record in records]
-    }
-    if records and all("main_image" in record for record in records):
-        obs["main_images"] = np.stack(
-            [record["main_image"] for record in records],
-            axis=0,
-        )
-    return obs
 
 
 def media_to_uint8_nhwc(media: torch.Tensor | np.ndarray | list[Any]) -> np.ndarray:
@@ -132,107 +93,10 @@ def extract_quoted_text(text: str) -> str:
     return match.group(1) if match else str(text)
 
 
-def load_jsonl_records(path: Path) -> list[dict[str, Any]]:
-    records = []
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                records.append(json.loads(line))
-    return records
-
-
-def resolve_dataset_path(dataset_path: str | Path, dataset_cfg: Any) -> Path:
-    dataset_path = Path(dataset_path)
-    if not dataset_path.is_dir():
-        if not dataset_path.exists():
-            raise FileNotFoundError(f"Prompt dataset not found: {dataset_path}")
-        return dataset_path
-
-    split = str(cfg_get(dataset_cfg, "split", "train"))
-    candidates = [
-        dataset_path / f"{split}_metadata.jsonl",
-        dataset_path / f"{split}.jsonl",
-        dataset_path / f"{split}.txt",
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    raise FileNotFoundError(
-        "Prompt dataset not found. Tried: "
-        + ", ".join(str(candidate) for candidate in candidates)
-    )
-
-
-def load_txt_prompts(dataset_path: Path) -> list[dict[str, Any]]:
-    records = []
-    with dataset_path.open("r", encoding="utf-8") as f:
-        for line in f:
-            prompt = line.strip()
-            if prompt:
-                records.append({"prompt": prompt})
-    if not records:
-        raise ValueError(f"Prompt dataset is empty: {dataset_path}")
-    return records
-
-
-def resolve_data_path(data_root: Path, value: str) -> Path:
-    path = Path(value)
-    return path if path.is_absolute() else data_root / path
-
-
-def first_nonempty_text(value: Any) -> str:
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    if isinstance(value, list):
-        for item in value:
-            text = first_nonempty_text(item)
-            if text:
-                return text
-    return ""
-
-
-def parse_image_size(value: Any) -> tuple[int, int] | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        parts = [part.strip() for part in value.replace("x", ",").split(",")]
-    else:
-        parts = list(value)
-    if len(parts) != 2:
-        raise ValueError("dataset.image_size must be [height, width].")
-    return int(parts[0]), int(parts[1])
-
-
-def load_rgb_image(path: Path, image_size: tuple[int, int] | None) -> np.ndarray:
-    if not path.exists():
-        raise FileNotFoundError(f"Condition image not found: {path}")
-    image = Image.open(path).convert("RGB")
-    if image_size is not None:
-        height, width = image_size
-        image = image.resize((width, height), Image.BICUBIC)
-    return np.asarray(image, dtype=np.uint8)
-
-
-images_to_uint8_nhwc = media_to_uint8_nhwc
-
-
 __all__ = [
     "cfg_get",
     "cfg_require",
     "extract_quoted_text",
-    "first_nonempty_text",
-    "images_to_uint8_nhwc",
-    "load_txt_prompts",
-    "load_jsonl_records",
-    "load_rgb_image",
     "media_to_uint8_nhwc",
-    "metadata_from_record",
     "normalize_type",
-    "obs_from_records",
-    "parse_image_size",
-    "parse_torch_dtype",
-    "resolve_dataset_path",
-    "resolve_data_path",
-    "text_condition_from_record",
 ]
