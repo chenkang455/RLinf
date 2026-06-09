@@ -25,10 +25,10 @@ class OCRDataset(TextDataset):
     """OCR prompt records for generation reward tasks."""
 
     @classmethod
-    def from_config(cls, dataset_cfg: Any) -> "OCRDataset":
-        dataset_path = Path(str(cfg_get(dataset_cfg, "path"))).expanduser()
+    def from_config(cls, cfg: Any) -> "OCRDataset":
+        dataset_path = Path(str(cfg_get(cfg, "path"))).expanduser()
         if dataset_path.is_dir():
-            split = str(cfg_get(dataset_cfg, "split", "train"))
+            split = str(cfg_get(cfg, "split", "train"))
             dataset_path = dataset_path / f"{split}.txt"
         return cls(load_txt_prompts(dataset_path))
 

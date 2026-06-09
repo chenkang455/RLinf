@@ -67,7 +67,7 @@ class GenRewardEnv(gym.Env):
             1, int(cfg_get(video_cfg, "num_capture_samples", 3))
         ) # number of samples to capture the video
         self._return_video: np.ndarray | None = None
-        self._env_records: list[dict[str, Any]] = [] # metadata of the dataset
+        self._env_records: list[dict[str, Any]] = [] # current dataset records
         self._env_obs: dict[str, Any] | None = None # observation of the dataset
 
     def update_reset_state_ids(self):

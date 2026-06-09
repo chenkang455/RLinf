@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import copy
 from typing import Any
 
 import numpy as np
@@ -32,12 +31,6 @@ class TextDataset:
 
     Required:
         task_description: str
-
-    Optional:
-        task_name: str
-        episode_id: str
-        dataset_index: int
-        metadata: dict[str, Any]
 
     `records_to_env_obs()` maps records to batched env observations with
     plural keys, for example `task_descriptions`.
@@ -72,7 +65,7 @@ class TextDataset:
         num_envs = int(num_envs)
         for index in group_indices:
             record = self[int(index)]
-            records.extend(copy.deepcopy(record) for _ in range(group_size))
+            records.extend(dict(record) for _ in range(group_size))
             if len(records) >= num_envs:
                 break
         env_records = records[:num_envs]
@@ -96,24 +89,10 @@ class ImageConditionedDataset(TextDataset):
     Required:
         main_image: np.ndarray with shape [height, width, channels]
 
-    Optional:
-        main_image_path: str | None
-        future_video_path: str | None
-        future_video: np.ndarray with shape [time, height, width, channels]
-
-    `records_to_env_obs()` maps those to `main_images` and, when present,
-    `future_video_paths` / `future_videos`.
+    `records_to_env_obs()` maps records to batched env observations with
+    `task_descriptions` and `main_images`. Path resolution, lazy loading, and
+    reference targets such as future videos belong to concrete datasets.
     """
-
-    def __getitem__(self, index: int) -> EnvRecord:
-        """Return one record with a loaded `main_image`."""
-        record = super().__getitem__(index)
-        if "main_image" not in record:
-            raise KeyError(
-                "ImageConditionedDataset records require `main_image`; "
-                "override `__getitem__` if images should be loaded lazily."
-            )
-        return record
 
     def records_to_env_obs(
         self,
@@ -125,22 +104,6 @@ class ImageConditionedDataset(TextDataset):
             [record["main_image"] for record in records],
             axis=0,
         )
-        has_future_video_path = any(
-            "future_video_path" in record for record in records
-        )
-        if has_future_video_path:
-            future_video_paths = [
-                record.get("future_video_path") for record in records
-            ]
-            env_obs["future_video_paths"] = future_video_paths
-        has_future_video = records and all(
-            record.get("future_video") is not None for record in records
-        )
-        if has_future_video:
-            env_obs["future_videos"] = np.stack(
-                [record["future_video"] for record in records],
-                axis=0,
-            )
         return env_obs
 
 
