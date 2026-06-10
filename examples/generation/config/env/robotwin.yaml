@@ -11,7 +11,7 @@ is_eval: False
 video_cfg:
   save_video: False
   info_on_video: False
-  video_base_dir: ${runner.logger.log_path}/video/video_similarity_reward
+  video_base_dir: ${runner.logger.log_path}/video
 
 dataset:
   type: "embodied.robotwin_dataset"
