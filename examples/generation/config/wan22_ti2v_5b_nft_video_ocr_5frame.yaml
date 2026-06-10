@@ -106,7 +106,7 @@ env:
     reward:
       type: "generation.video_ocr"
       key: "avg"
-      use_gpu: False
+      use_gpu: True # export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
       lang: "en"
       frame_interval: 4
   eval:
@@ -170,6 +170,7 @@ actor:
       max_generation_batch_size: 6
       compile_transformer_forward: True
       compile_mode: "default"
+      enable_cross_attn_cache: True
 
   optim:
     lr: 4.0e-4

@@ -22,6 +22,12 @@ import torch
 
 from rlinf.models.embodiment.base_policy import BasePolicy, ForwardType
 from rlinf.models.generation.sd3.utils import prompt_list
+from rlinf.models.generation.wan.cross_attn_cache import (
+    activate_cross_attn_cache,
+    deactivate_cross_attn_cache,
+    install_wan_cross_attn_cache_processors,
+    set_cross_attn_cache_branch,
+)
 
 
 @dataclass
@@ -47,6 +53,7 @@ class Wan22_TI2V_5B_Config:
     init_lora_weights: str = "gaussian"
     compile_transformer_forward: bool = False
     compile_mode: str = "default"
+    enable_cross_attn_cache: bool = False
     max_generation_batch_size: int = 0
     target_modules: list[str] = field(
         default_factory=lambda: [
@@ -84,6 +91,7 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
         self.pipeline = pipeline
         self.transformer = pipeline.transformer
         self._compiled_transformer_forward = None
+        install_wan_cross_attn_cache_processors(self.transformer)
 
     @property
     def _no_split_modules(self) -> list[str]:
@@ -200,6 +208,66 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
             None if negative_prompt_embeds is None else negative_prompt_embeds.to(device)
         )
 
+    @staticmethod
+    def _unique_prompt_groups(
+        prompts: list[str],
+        negative_prompts: list[str],
+    ) -> tuple[list[str], list[str], list[int]]:
+        unique_prompts: list[str] = []
+        unique_negative_prompts: list[str] = []
+        batch_to_unique: list[int] = []
+        prompt_to_unique: dict[str, int] = {}
+        for prompt, negative_prompt in zip(prompts, negative_prompts, strict=True):
+            if prompt not in prompt_to_unique:
+                prompt_to_unique[prompt] = len(unique_prompts)
+                unique_prompts.append(prompt)
+                unique_negative_prompts.append(negative_prompt)
+            batch_to_unique.append(prompt_to_unique[prompt])
+        return unique_prompts, unique_negative_prompts, batch_to_unique
+
+    @staticmethod
+    def _expand_prompt_embeds(
+        unique_embeds: torch.Tensor,
+        batch_to_unique: list[int],
+        batch_size: int,
+    ) -> torch.Tensor:
+        if all(index == batch_to_unique[0] for index in batch_to_unique):
+            return unique_embeds.expand(batch_size, -1, -1)
+        index_tensor = torch.tensor(
+            batch_to_unique,
+            device=unique_embeds.device,
+            dtype=torch.long,
+        )
+        return unique_embeds.index_select(0, index_tensor)
+
+    @torch.no_grad()
+    def _encode_prompts_for_batch(
+        self,
+        prompts: list[str],
+        negative_prompts: list[str],
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        batch_size = len(prompts)
+        unique_prompts, unique_negative_prompts, batch_to_unique = (
+            self._unique_prompt_groups(prompts, negative_prompts)
+        )
+        unique_prompt_embeds, unique_negative_prompt_embeds = self.encode_prompts(
+            unique_prompts,
+            negative_prompts=unique_negative_prompts,
+        )
+        prompt_embeds = self._expand_prompt_embeds(
+            unique_prompt_embeds,
+            batch_to_unique,
+            batch_size,
+        )
+        negative_prompt_embeds = None
+        if unique_negative_prompt_embeds is not None:
+            negative_prompt_embeds = self._expand_prompt_embeds(
+                unique_negative_prompt_embeds,
+                batch_to_unique,
+                batch_size,
+            )
+        return prompt_embeds, negative_prompt_embeds
+
     @torch.no_grad()
     def predict_action_batch(
         self,
@@ -211,9 +279,9 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
         del compute_values
         prompts = self.obs_processor(env_obs)
         negative_prompts = kwargs.get("negative_prompts") or [""] * len(prompts)
-        prompt_embeds, negative_prompt_embeds = self.encode_prompts(
+        prompt_embeds, negative_prompt_embeds = self._encode_prompts_for_batch(
             prompts,
-            negative_prompts=negative_prompts,
+            negative_prompts,
         )
         if self.config.offload_auxiliary_modules:
             self.pipeline.text_encoder.to(device="cpu")
@@ -329,34 +397,52 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
             height=height,
             width=width,
             num_frames=self.config.num_frames,
-            dtype=torch.float32,
+            dtype=model_dtype,
             device=device,
             generator=generator,
             latents=latents,
         )
+        if latents.dtype != model_dtype:
+            latents = latents.to(dtype=model_dtype)
         self.pipeline._num_timesteps = len(timesteps)
-        for t in timesteps:
-            model_latents = latents.to(dtype=model_dtype)
-            timestep = self._scheduler_to_model_timesteps(
-                t.expand(latents.shape[0]), model_latents
-            )
-            noise_pred = self._transformer_forward(
-                model_latents,
-                timestep,
-                prompt_embeds.to(dtype=model_dtype),
-                (
-                    None
-                    if negative_prompt_embeds is None
-                    else negative_prompt_embeds.to(dtype=model_dtype)
+        model_prompt_embeds = prompt_embeds.to(dtype=model_dtype)
+        model_negative_prompt_embeds = (
+            None
+            if negative_prompt_embeds is None
+            else negative_prompt_embeds.to(dtype=model_dtype)
+        )
+        use_cross_attn_cache = self._should_use_cross_attn_cache()
+        if use_cross_attn_cache:
+            activate_cross_attn_cache(
+                self.transformer,
+                cond_prompt_embeds=model_prompt_embeds,
+                uncond_prompt_embeds=(
+                    model_negative_prompt_embeds if self.config.cfg else None
                 ),
-                guidance_scale,
             )
-            latents = self.pipeline.scheduler.step(
-                noise_pred.float(),
-                t,
-                latents.float(),
-                return_dict=False,
-            )[0]
+        try:
+            for t in timesteps:
+                timestep = self._scheduler_to_model_timesteps(
+                    t.expand(latents.shape[0]), latents
+                )
+                noise_pred = self._transformer_forward(
+                    latents,
+                    timestep,
+                    model_prompt_embeds,
+                    model_negative_prompt_embeds,
+                    guidance_scale,
+                )
+                latents = self.pipeline.scheduler.step(
+                    noise_pred,
+                    t,
+                    latents,
+                    return_dict=False,
+                )[0]
+                if latents.dtype != model_dtype:
+                    latents = latents.to(dtype=model_dtype)
+        finally:
+            if use_cross_attn_cache:
+                deactivate_cross_attn_cache(self.transformer)
         videos = self.decode_latents(latents, output_type=self.config.output_type)
         images = self._video_to_image_batch(videos)
         if self.config.offload_auxiliary_modules:
@@ -373,6 +459,9 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
             return videos[:, 0]
         return videos
 
+    def _should_use_cross_attn_cache(self) -> bool:
+        return bool(self.config.enable_cross_attn_cache)
+
     def _transformer_forward(
         self,
         latents: torch.Tensor,
@@ -381,6 +470,8 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
         negative_prompt_embeds: torch.Tensor | None,
         guidance_scale: float,
     ) -> torch.Tensor:
+        if self._should_use_cross_attn_cache():
+            set_cross_attn_cache_branch(self.transformer, "cond")
         noise_pred = self._call_transformer(
             hidden_states=latents,
             timestep=timestep,
@@ -388,6 +479,8 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
             return_dict=False,
         )[0]
         if self.config.cfg:
+            if self._should_use_cross_attn_cache():
+                set_cross_attn_cache_branch(self.transformer, "uncond")
             noise_uncond = self._call_transformer(
                 hidden_states=latents,
                 timestep=timestep,
@@ -415,14 +508,14 @@ class Wan22_TI2V_5B(torch.nn.Module, BasePolicy):
     ) -> torch.Tensor:
         timesteps = timesteps.reshape(-1).to(device=latents.device)
         if timesteps.dtype.is_floating_point and timesteps.max() <= 1.0:
-            timesteps = timesteps.to(dtype=torch.float32) * 1000.0
+            timesteps = timesteps.to(dtype=latents.dtype) * 1000.0
         if not getattr(self.pipeline.config, "expand_timesteps", False):
             return timesteps.expand(latents.shape[0])
 
         if timesteps.numel() == 1:
             timesteps = timesteps.expand(latents.shape[0])
-        mask = torch.ones(latents.shape, dtype=torch.float32, device=latents.device)
-        expanded = mask[:, 0, :, ::2, ::2] * timesteps.to(torch.float32).view(
+        mask = torch.ones(latents.shape, dtype=latents.dtype, device=latents.device)
+        expanded = mask[:, 0, :, ::2, ::2] * timesteps.to(latents.dtype).view(
             -1, 1, 1, 1
         )
         return expanded.flatten(1)

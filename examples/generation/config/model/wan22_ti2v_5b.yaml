@@ -27,3 +27,4 @@ wan22_ti2v_5b:
   lora_alpha: 64
   lora_path: null
   offload_auxiliary_modules: True
+  enable_cross_attn_cache: False
