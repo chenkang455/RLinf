@@ -108,7 +108,7 @@ env:
       repo_id: "local/vidar_robotwin_click_bell"
       root: "/mnt/public2/chenkang/wam_rl/video_rl/vidar/vidar-robotwin/data_lerobot/click_bell"
       sample_mode: episode
-      future_seconds: 2.0
+      future_seconds: -1
       num_frames: 61
     reward:
       type: "multi"
