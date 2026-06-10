@@ -18,12 +18,8 @@ from typing import Any
 
 import numpy as np
 import torch
-from rlinf.envs.gen_reward.rewards import (
-    RewardBackend,
-    frame_rewards_to_latent_rewards,
-)
+from rlinf.envs.gen_reward.rewards import RewardBackend
 from rlinf.envs.gen_reward.utils import (
-    cfg_get,
     media_to_uint8_nhwc,
     prepare_video_pair,
 )
@@ -32,12 +28,9 @@ from rlinf.envs.gen_reward.utils import (
 class VideoSimilarityRewardBackend(RewardBackend):
     """Reference-video similarity reward for video generation datasets."""
 
-    def __init__(self, frame_interval: int = -1):
-        self.frame_interval = int(frame_interval)
-
     @classmethod
     def from_config(cls, cfg: Any) -> "VideoSimilarityRewardBackend":
-        return cls(frame_interval=int(cfg_get(cfg, "frame_interval", -1)))
+        return cls()
 
     def score(
         self,
@@ -51,8 +44,7 @@ class VideoSimilarityRewardBackend(RewardBackend):
             output_video, target_video = prepare_video_pair(output_video, record)
             frame_rewards.append(self._frame_similarities(output_video, target_video))
 
-        rewards = frame_rewards_to_latent_rewards(frame_rewards, self.frame_interval)
-        rewards_tensor = torch.from_numpy(rewards).float()
+        rewards_tensor = torch.from_numpy(np.stack(frame_rewards)).float()
         return {"avg": rewards_tensor, "video_similarity": rewards_tensor}
 
     def _frame_similarities(

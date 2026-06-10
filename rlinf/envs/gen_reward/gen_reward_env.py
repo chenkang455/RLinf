@@ -21,7 +21,7 @@ import numpy as np
 import torch
 
 from . import build_reward_backend, build_reward_dataset
-from .rewards import RewardBackend
+from .rewards import RewardBackend, frame_rewards_to_latent_rewards
 from .utils import (
     cfg_get,
     cfg_require,
@@ -61,6 +61,7 @@ class GenRewardEnv(gym.Env):
         self.dataset = build_reward_dataset(cfg_require(cfg, "dataset"))
         reward_cfg = cfg_require(cfg, "reward")
         self.reward_key = str(cfg_get(reward_cfg, "key", "avg"))
+        self.frame_interval = int(cfg_get(reward_cfg, "frame_interval", -1))
         self.reward_backend: RewardBackend = build_reward_backend(reward_cfg)
         self.image_frame_repeat = 8
         self.num_capture_samples = 3
@@ -107,6 +108,15 @@ class GenRewardEnv(gym.Env):
         )
         # return info
         rewards = scores[self.reward_key].float()
+        if rewards.ndim > 1:
+            rewards = torch.as_tensor(
+                frame_rewards_to_latent_rewards(
+                    rewards.detach().cpu().numpy(),
+                    self.frame_interval,
+                ),
+                dtype=rewards.dtype,
+                device=rewards.device,
+            )
         truncations = torch.zeros_like(rewards, dtype=torch.bool)
         terminations = torch.ones_like(rewards, dtype=torch.bool)
         if rewards.ndim > 1:
@@ -117,6 +127,7 @@ class GenRewardEnv(gym.Env):
         }
         for key, value in scores.items():
             episode[key] = value.detach().float()
+        episode[self.reward_key] = rewards.detach().float()
         final_obs = self._env_obs
         next_obs = self._env_obs
         infos = {
