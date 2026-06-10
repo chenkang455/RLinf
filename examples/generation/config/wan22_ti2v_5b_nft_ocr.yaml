@@ -106,7 +106,7 @@ env:
       type: "single"
       model: "generation.ocr"
       key: "avg"
-      use_gpu: False
+      use_gpu: True
       lang: "en"
   eval:
     total_num_envs: 128
@@ -122,7 +122,7 @@ env:
       type: "single"
       model: "generation.ocr"
       key: "avg"
-      use_gpu: False
+      use_gpu: True
       lang: "en"
 
 rollout:

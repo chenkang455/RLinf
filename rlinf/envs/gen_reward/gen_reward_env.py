@@ -178,7 +178,9 @@ class GenRewardEnv(gym.Env):
         score_curves = {}
         if scores is not None:
             for key, value in scores.items():
-                if self.is_multi_reward_backend and key != "avg":
+                if self.is_multi_reward_backend and not (
+                    key == "avg" or key.endswith(".avg")
+                ):
                     continue
                 if torch.is_tensor(value):
                     value = value.detach().cpu().float().numpy()

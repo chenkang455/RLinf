@@ -107,7 +107,7 @@ env:
       type: "single"
       model: "generation.video_ocr"
       key: "avg"
-      use_gpu: False
+      use_gpu: True
       lang: "en"
       frame_interval: 4
   eval:
@@ -124,7 +124,7 @@ env:
       type: "single"
       model: "generation.video_ocr"
       key: "avg"
-      use_gpu: False
+      use_gpu: True
       lang: "en"
       frame_interval: 4
 
