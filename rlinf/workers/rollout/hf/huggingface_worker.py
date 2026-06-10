@@ -129,6 +129,10 @@ class MultiStepRolloutWorker(Worker):
                 eval_batch_size=self.eval_batch_size,
             )
 
+        self.skip_epilogue_predict = self._resolve_skip_epilogue_predict()
+        if self.skip_epilogue_predict:
+            print("rollout: skipping epilogue predict (bootstrap forward is not needed)")
+
         self.dst_ranks = {}
         self.src_ranks = {}
         if not self.cfg.runner.only_eval:
@@ -326,6 +330,23 @@ class MultiStepRolloutWorker(Worker):
         result["expert_label_flag"] = bool(expert_label_flag)
         return actions, result
 
+    def _resolve_skip_epilogue_predict(self) -> bool:
+        """Return whether the post-chunk epilogue forward can be skipped."""
+        cfg_value = self.cfg.rollout.get("skip_epilogue_predict", None)
+        if cfg_value is not None:
+            return bool(cfg_value)
+
+        has_value_estimator = hasattr(self.hf_model, "value_head") or hasattr(
+            self.hf_model, "q_head"
+        )
+        if not has_value_estimator:
+            return True
+        if not self.cfg.env.train.auto_reset:
+            return True
+        if self.cfg.algorithm.get("adv_type", "gae") != "gae":
+            return True
+        return False
+
     def get_bootstrap_values(
         self, final_obs: dict[str, Any] | None
     ) -> torch.Tensor | None:
@@ -426,15 +447,22 @@ class MultiStepRolloutWorker(Worker):
                 self.send_rollout_result(output_channel, rollout_result, mode="train")
         for _ in range(self.num_pipeline_stages):
             env_output = await self.recv_env_output(input_channel)
-            actions, result = self.predict(env_output["obs"])
-
-            rollout_result = RolloutResult(
-                actions=actions,
-                prev_values=result["prev_values"] if self.collect_prev_infos else None,
-                bootstrap_values=self.get_bootstrap_values(
-                    env_output.get("final_obs", None)
-                ),
-            )
+            if self.skip_epilogue_predict:
+                batch_size = self._infer_env_batch_size(env_output)
+                rollout_result = RolloutResult(
+                    versions=torch.zeros(batch_size, 1, dtype=torch.float32),
+                )
+            else:
+                actions, result = self.predict(env_output["obs"])
+                rollout_result = RolloutResult(
+                    actions=actions,
+                    prev_values=result["prev_values"]
+                    if self.collect_prev_infos
+                    else None,
+                    bootstrap_values=self.get_bootstrap_values(
+                        env_output.get("final_obs", None)
+                    ),
+                )
             self.send_rollout_result(output_channel, rollout_result, mode="train")
 
     async def generate(

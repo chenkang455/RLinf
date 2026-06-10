@@ -132,6 +132,7 @@ rollout:
   recompute_logprobs: False
   collect_prev_infos: True
   enable_offload: True
+  skip_epilogue_predict: True
   pipeline_stage_num: 1
   model:
     model_path: ${actor.model.model_path}
