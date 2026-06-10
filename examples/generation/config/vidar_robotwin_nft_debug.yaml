@@ -28,7 +28,7 @@ runner:
   logger:
     log_path: "../results"
     project_name: rlinf
-    experiment_name: "vidar_robotwin_nft_video_similarity_smoke"
+    experiment_name: "vidar_robotwin_nft_video_similarity_action_similarity_smoke"
     logger_backends: ["tensorboard"]
   max_epochs: 1
   max_steps: -1
@@ -111,36 +111,27 @@ env:
       future_seconds: 2.0
       num_frames: 61
     reward:
-      type: "single"
-      model: "embodied.video_similarity"
+      type: "multi"
+      model: null
       key: "avg"
       frame_interval: 4
-  eval:
-    total_num_envs: 1
-    group_size: 1
-    max_episode_steps: 1
-    max_steps_per_rollout_epoch: 16
-    is_eval: True
-    video_cfg:
-      save_video: True
-    dataset:
-      type: "embodied.robotwin_dataset"
-      repo_id: "local/vidar_robotwin_click_bell"
-      root: "/mnt/public2/chenkang/wam_rl/video_rl/vidar/vidar-robotwin/data_lerobot/click_bell"
-      sample_mode: episode
-      future_seconds: 2.0
-      num_frames: 61
-    reward:
-      type: "single"
-      model: "embodied.video_similarity"
-      key: "avg"
-      frame_interval: 4
+      rewards:
+        - name: "video_similarity"
+          model: "embodied.video_similarity"
+          weight: 1.0
+        - name: "action_similarity"
+          model: "embodied.action_similarity"
+          weight: 0.2
+          checkpoint_path: "/mnt/public2/chenkang/wam_rl/checkpoints/vidar_ckpts/idm.pt"
+          device: "cuda"
+          temperature: 1.0
 
 rollout:
   group_name: "RolloutGroup"
   generation_backend: "huggingface"
   recompute_logprobs: False
   collect_prev_infos: True
+  collect_final_values: False
   enable_offload: False
   pipeline_stage_num: 1
   model:

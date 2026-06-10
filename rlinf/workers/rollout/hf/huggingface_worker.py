@@ -129,6 +129,9 @@ class MultiStepRolloutWorker(Worker):
                 eval_batch_size=self.eval_batch_size,
             )
 
+        self.collect_final_values = self.cfg.rollout.get(
+            "collect_final_values", True
+        )
         self.dst_ranks = {}
         self.src_ranks = {}
         if not self.cfg.runner.only_eval:
@@ -426,15 +429,19 @@ class MultiStepRolloutWorker(Worker):
                 self.send_rollout_result(output_channel, rollout_result, mode="train")
         for _ in range(self.num_pipeline_stages):
             env_output = await self.recv_env_output(input_channel)
-            actions, result = self.predict(env_output["obs"])
-
-            rollout_result = RolloutResult(
-                actions=actions,
-                prev_values=result["prev_values"] if self.collect_prev_infos else None,
-                bootstrap_values=self.get_bootstrap_values(
-                    env_output.get("final_obs", None)
-                ),
-            )
+            if self.collect_final_values:
+                _, result = self.predict(env_output["obs"])
+                rollout_result = RolloutResult(
+                    prev_values=result["prev_values"] if self.collect_prev_infos else None,
+                    bootstrap_values=self.get_bootstrap_values(
+                        env_output.get("final_obs", None)
+                    ),
+                )
+            else:
+                batch_size = self._infer_env_batch_size(env_output)
+                rollout_result = RolloutResult(
+                    versions=torch.zeros(batch_size, 1, dtype=torch.float32),
+                )
             self.send_rollout_result(output_channel, rollout_result, mode="train")
 
     async def generate(
