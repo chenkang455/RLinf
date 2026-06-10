@@ -17,7 +17,7 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any
 
-from rlinf.envs.gen_reward.rewards import MultiRewardBackend
+from rlinf.envs.gen_reward.rewards import MultiRewardBackend, validate_reward_support
 from rlinf.envs.gen_reward.utils import (
     cfg_require,
     normalize_type,
@@ -33,7 +33,7 @@ def build_reward_dataset(cfg: Any) -> Any:
 def _build_single_reward_backend(cfg: Any) -> Any:
     reward_model = normalize_type(cfg_require(cfg, "model"))
     module = import_module(f"rlinf.envs.gen_reward.rewards.{reward_model}")
-    return module.REWARD_CLS.from_config(cfg)
+    return validate_reward_support(module.REWARD_CLS.from_config(cfg), cfg)
 
 
 def build_reward_backend(cfg: Any) -> Any:

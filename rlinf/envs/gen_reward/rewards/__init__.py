@@ -21,6 +21,10 @@ import torch
 
 from rlinf.envs.gen_reward.utils import cfg_get, cfg_require, normalize_type
 
+FRAME_LEVEL = "frame_level"
+VIDEO_LEVEL = "video_level"
+REWARD_SUPPORT_TYPES = (FRAME_LEVEL, VIDEO_LEVEL)
+
 RewardOutputs = torch.Tensor | np.ndarray | list[Any]
 RewardRecords = list[dict[str, Any]]
 RewardScores = dict[str, torch.Tensor]
@@ -35,9 +39,12 @@ class RewardBackend(Protocol):
 
     Returns:
         Score dict containing the configured `reward.key`, usually `avg`.
-        Score tensors should have batch dimension first. A 1-D tensor means
-        one reward per environment; a 2-D tensor means chunk rewards.
+        Score tensors should have batch dimension first. `frame_level` rewards
+        use shape [B, T]; `video_level` rewards use shape [B, 1].
     """
+
+    supported_reward_levels: tuple[str, ...]
+    support_type: str
 
     @classmethod
     def from_config(cls, cfg: Any) -> "RewardBackend":
@@ -49,6 +56,27 @@ class RewardBackend(Protocol):
         records: RewardRecords,
     ) -> RewardScores:
         ...
+
+
+def normalize_reward_support_type(value: Any) -> str:
+    support_type = str(value).lower().replace("-", "_")
+    if support_type not in REWARD_SUPPORT_TYPES:
+        raise ValueError(f"Unknown reward support_type: {support_type}")
+    return support_type
+
+
+def validate_reward_support(backend: RewardBackend, cfg: Any) -> RewardBackend:
+    supported = tuple(getattr(backend, "supported_reward_levels", REWARD_SUPPORT_TYPES))
+    support_type = normalize_reward_support_type(
+        cfg_get(cfg, "support_type", getattr(backend, "support_type", supported[0]))
+    )
+    if support_type not in supported:
+        raise ValueError(
+            f"{backend.__class__.__name__} supports support_type {supported}, "
+            f"got {support_type}."
+        )
+    backend.support_type = support_type
+    return backend
 
 
 def frame_rewards_to_latent_rewards(
@@ -76,7 +104,9 @@ class MultiRewardBackend:
             reward_model = normalize_type(cfg_require(reward_cfg, "model"))
             name = str(cfg_get(reward_cfg, "name", reward_model.split(".")[-1]))
             weight = float(cfg_get(reward_cfg, "weight", 1.0))
-            reward_backends.append((name, weight, build_single_reward_backend(reward_cfg)))
+            reward_backends.append(
+                (name, weight, build_single_reward_backend(reward_cfg))
+            )
         return cls(reward_backends)
 
     def score(
@@ -98,10 +128,14 @@ class MultiRewardBackend:
 
 
 __all__ = [
+    "FRAME_LEVEL",
+    "VIDEO_LEVEL",
     "MultiRewardBackend",
     "RewardBackend",
     "RewardOutputs",
     "RewardRecords",
     "RewardScores",
     "frame_rewards_to_latent_rewards",
+    "normalize_reward_support_type",
+    "validate_reward_support",
 ]

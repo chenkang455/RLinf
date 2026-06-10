@@ -18,7 +18,7 @@ from typing import Any
 
 import numpy as np
 import torch
-from rlinf.envs.gen_reward.rewards import RewardBackend
+from rlinf.envs.gen_reward.rewards import FRAME_LEVEL, RewardBackend
 from rlinf.envs.gen_reward.utils import (
     media_to_uint8_nhwc,
     prepare_video_pair,
@@ -27,6 +27,9 @@ from rlinf.envs.gen_reward.utils import (
 
 class VideoSimilarityRewardBackend(RewardBackend):
     """Reference-video similarity reward for video generation datasets."""
+
+    supported_reward_levels = (FRAME_LEVEL,)
+    support_type = FRAME_LEVEL
 
     @classmethod
     def from_config(cls, cfg: Any) -> "VideoSimilarityRewardBackend":

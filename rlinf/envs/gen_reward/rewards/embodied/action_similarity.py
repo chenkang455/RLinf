@@ -21,7 +21,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from rlinf.envs.gen_reward.rewards import RewardBackend
+from rlinf.envs.gen_reward.rewards import FRAME_LEVEL, RewardBackend
 from rlinf.envs.gen_reward.rewards.embodied.models.vidar_dim import IDM
 from rlinf.envs.gen_reward.utils import (
     cfg_get,
@@ -32,6 +32,9 @@ from rlinf.envs.gen_reward.utils import (
 
 class ActionSimilarityRewardBackend(RewardBackend):
     """IDM-based action similarity reward for image-conditioned videos."""
+
+    supported_reward_levels = (FRAME_LEVEL,)
+    support_type = FRAME_LEVEL
 
     def __init__(
         self,

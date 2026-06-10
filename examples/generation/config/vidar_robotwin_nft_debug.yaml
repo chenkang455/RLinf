@@ -125,6 +125,14 @@ env:
           checkpoint_path: "/mnt/public2/chenkang/wam_rl/checkpoints/vidar_ckpts/idm.pt"
           device: "cuda"
           temperature: 1.0
+        - name: "action_smoothness"
+          model: "embodied.action_smoothness"
+          support_type: "frame_level"
+          weight: 0.1
+          checkpoint_path: "/mnt/public2/chenkang/wam_rl/checkpoints/vidar_ckpts/idm.pt"
+          device: "cuda"
+          temperature: 1.0
+          fps: 30.0
 
 rollout:
   group_name: "RolloutGroup"
