@@ -19,6 +19,8 @@ from typing import Any, Protocol
 import numpy as np
 import torch
 
+from rlinf.envs.gen_reward.utils import cfg_get, cfg_require, normalize_type
+
 RewardOutputs = torch.Tensor | np.ndarray | list[Any]
 RewardRecords = list[dict[str, Any]]
 RewardScores = dict[str, torch.Tensor]
@@ -49,7 +51,40 @@ class RewardBackend(Protocol):
         ...
 
 
+class MultiRewardBackend:
+    def __init__(self, reward_backends: list[tuple[str, float, RewardBackend]]):
+        self.reward_backends = reward_backends
+
+    @classmethod
+    def from_config(cls, cfg: Any, build_single_reward_backend) -> "MultiRewardBackend":
+        reward_backends = []
+        for reward_cfg in cfg_require(cfg, "rewards"):
+            reward_model = normalize_type(cfg_require(reward_cfg, "model"))
+            name = str(cfg_get(reward_cfg, "name", reward_model.split(".")[-1]))
+            weight = float(cfg_get(reward_cfg, "weight", 1.0))
+            reward_backends.append((name, weight, build_single_reward_backend(reward_cfg)))
+        return cls(reward_backends)
+
+    def score(
+        self,
+        outputs: RewardOutputs,
+        records: RewardRecords,
+    ) -> RewardScores:
+        scores = {}
+        weighted_rewards = []
+        total_weight = 0.0
+        for name, weight, backend in self.reward_backends:
+            backend_scores = backend.score(outputs, records)
+            weighted_rewards.append(backend_scores["avg"].float() * weight)
+            total_weight += weight
+            for key, value in backend_scores.items():
+                scores[f"{name}.{key}"] = value
+        scores["avg"] = sum(weighted_rewards) / total_weight
+        return scores
+
+
 __all__ = [
+    "MultiRewardBackend",
     "RewardBackend",
     "RewardOutputs",
     "RewardRecords",

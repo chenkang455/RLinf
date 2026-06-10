@@ -37,7 +37,7 @@ class OCRRewardBackend(RewardBackend):
             raise ImportError(
                 "OCR reward requires `paddleocr` and `python-Levenshtein`. "
                 "Install those packages in the RLinf environment before using "
-                "reward.type=generation.ocr."
+                "reward.model=generation.ocr."
             ) from exc
 
         self.distance = distance

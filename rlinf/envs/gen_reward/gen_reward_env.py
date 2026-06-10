@@ -136,6 +136,7 @@ class GenRewardEnv(gym.Env):
         task_descriptions: list[str] | None = None,
         scores: dict[str, torch.Tensor] | None = None,
     ) -> np.ndarray | None:
+        # mode selection
         media = media_to_uint8_nhwc(media)
         has_future_video = bool(records and records[0].get("future_video") is not None)
         if media.ndim == 4:
@@ -144,7 +145,7 @@ class GenRewardEnv(gym.Env):
             mode = "embodied_video"
         else:
             mode = "video"
-
+        # video pre-process
         if mode == "image":
             media = np.repeat(
                 media[: self.num_capture_samples, None],
@@ -159,10 +160,12 @@ class GenRewardEnv(gym.Env):
             )
         else:
             media = media[: self.num_capture_samples]
-
+        # plot the score curve
         score_curves = {}
         if scores is not None:
             for key, value in scores.items():
+                if key != "avg" and not key.endswith(".avg"):
+                    continue
                 if torch.is_tensor(value):
                     value = value.detach().cpu().float().numpy()
                 else:

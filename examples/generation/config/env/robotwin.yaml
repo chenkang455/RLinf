@@ -24,5 +24,6 @@ dataset:
   video_backend: "pyav"
 
 reward:
-  type: "embodied.video_similarity"
+  type: "single"
+  model: "embodied.video_similarity"
   key: "avg"

@@ -19,7 +19,8 @@ dataset:
   split: "train"
 
 reward:
-  type: "generation.ocr"
+  type: "single"
+  model: "generation.ocr"
   key: "avg"
   use_gpu: False
   lang: "en"

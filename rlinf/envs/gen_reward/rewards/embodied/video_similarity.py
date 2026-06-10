@@ -45,8 +45,7 @@ class VideoSimilarityRewardBackend(RewardBackend):
             frame_rewards.append(self._frame_similarities(output_video, target_video))
 
         frame_rewards_tensor = torch.from_numpy(np.stack(frame_rewards)).float()
-        avg_rewards = frame_rewards_tensor.mean(dim=1)
-        return {"avg": avg_rewards, "video_similarity": frame_rewards_tensor}
+        return {"avg": frame_rewards_tensor, "video_similarity": frame_rewards_tensor}
 
     def _frame_similarities(
         self,

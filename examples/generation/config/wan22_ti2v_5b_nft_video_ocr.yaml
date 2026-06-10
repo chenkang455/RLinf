@@ -104,7 +104,8 @@ env:
       path: "/mnt/public2/chenkang/wam_rl/video_rl/DiffusionNFT/dataset/ocr"
       split: "train"
     reward:
-      type: "generation.video_ocr"
+      type: "single"
+      model: "generation.video_ocr"
       key: "avg"
       use_gpu: False
       lang: "en"
@@ -120,7 +121,8 @@ env:
       path: "/mnt/public2/chenkang/wam_rl/video_rl/DiffusionNFT/dataset/ocr"
       split: "test"
     reward:
-      type: "generation.video_ocr"
+      type: "single"
+      model: "generation.video_ocr"
       key: "avg"
       use_gpu: False
       lang: "en"

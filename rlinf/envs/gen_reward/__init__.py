@@ -17,6 +17,7 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any
 
+from rlinf.envs.gen_reward.rewards import MultiRewardBackend
 from rlinf.envs.gen_reward.utils import (
     cfg_require,
     normalize_type,
@@ -29,10 +30,19 @@ def build_reward_dataset(cfg: Any) -> Any:
     return module.DATASET_CLS.from_config(cfg)
 
 
+def _build_single_reward_backend(cfg: Any) -> Any:
+    reward_model = normalize_type(cfg_require(cfg, "model"))
+    module = import_module(f"rlinf.envs.gen_reward.rewards.{reward_model}")
+    return module.REWARD_CLS.from_config(cfg)
+
+
 def build_reward_backend(cfg: Any) -> Any:
     reward_type = normalize_type(cfg_require(cfg, "type"))
-    module = import_module(f"rlinf.envs.gen_reward.rewards.{reward_type}")
-    return module.REWARD_CLS.from_config(cfg)
+    if reward_type == "single":
+        return _build_single_reward_backend(cfg)
+    if reward_type == "multi":
+        return MultiRewardBackend.from_config(cfg, _build_single_reward_backend)
+    raise ValueError(f"Unknown gen_reward reward type: {reward_type}")
 
 
 from rlinf.envs.gen_reward.gen_reward_env import GenRewardEnv
