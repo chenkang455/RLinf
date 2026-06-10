@@ -51,11 +51,14 @@ class VideoSimilarityRewardBackend(RewardBackend):
         output_video: np.ndarray,
         target_video: np.ndarray,
     ) -> float:
-        num_frames = min(output_video.shape[0], target_video.shape[0])
-        if num_frames == 0:
+        if output_video.shape[0] != target_video.shape[0]:
+            raise ValueError(
+                "VideoSimilarityRewardBackend expects output and target videos "
+                f"to have the same number of frames, got output={output_video.shape[0]} "
+                f"target={target_video.shape[0]}."
+            )
+        if output_video.shape[0] == 0:
             return 0.0
-        output_video = output_video[:num_frames]
-        target_video = target_video[:num_frames]
         if output_video.shape[1:3] != target_video.shape[1:3]:
             target_video = np.stack(
                 [

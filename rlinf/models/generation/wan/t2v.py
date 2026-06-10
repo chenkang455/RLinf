@@ -66,7 +66,7 @@ class Wan22T2VModel(Wan22Model):
         model_dtype = next(self.transformer.parameters()).dtype
         timesteps = self._prepare_denoise_timesteps(num_steps, device)
         height, width = self.config.resolution
-        if negative_prompt_embeds is not None:
+        if self.config.cfg:
             negative_prompt_embeds = negative_prompt_embeds.to(
                 device=device,
                 dtype=model_dtype,

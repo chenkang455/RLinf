@@ -6,8 +6,6 @@ auto_reset: False
 ignore_terminations: False
 max_episode_steps: 1
 max_steps_per_rollout_epoch: 5
-use_fixed_reset_state_ids: False
-use_ordered_reset_state_ids: False
 is_eval: False
 
 video_cfg:

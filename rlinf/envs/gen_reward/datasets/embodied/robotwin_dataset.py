@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import numpy as np
+import cv2
 
 from rlinf.envs.gen_reward.datasets.embodied.lerobot_dataset import (
     LeRobotImageConditionedDataset,
@@ -34,10 +35,12 @@ class RobotwinDataset(LeRobotImageConditionedDataset):
         if len(views) < 3:
             return views[0]
         top, left, right = views[:3]
+        height, width = top.shape[:2]
+        wrist_size = (width // 2, height // 2)
+        left = cv2.resize(left, wrist_size, interpolation=cv2.INTER_AREA)
+        right = cv2.resize(right, wrist_size, interpolation=cv2.INTER_AREA)
         bottom = np.concatenate([left, right], axis=1)
-        y_index = np.linspace(0, top.shape[0] - 1, bottom.shape[0]).round().astype(int)
-        x_index = np.linspace(0, top.shape[1] - 1, bottom.shape[1]).round().astype(int)
-        return np.concatenate([top[y_index][:, x_index], bottom], axis=0)
+        return np.concatenate([top, bottom], axis=0)
 
 
 DATASET_CLS = RobotwinDataset

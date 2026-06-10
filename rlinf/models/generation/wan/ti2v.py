@@ -44,17 +44,20 @@ class Wan22TI2VModel(Wan22Model):
             device=nft_batch["device"],
             dtype=nft_batch["model_dtype"],
         )
-        model_x_t = torch.cat([nft_batch["model_x_t"], latent_condition], dim=1)
-        image_embeds = forward_inputs["image_embeds"].to(
+        first_frame_mask = forward_inputs["first_frame_mask"].to(
             device=nft_batch["device"],
             dtype=nft_batch["model_dtype"],
         )
+        model_x_t = (
+            (1 - first_frame_mask) * latent_condition
+            + first_frame_mask * nft_batch["model_x_t"]
+        )
+        timestep_mask = first_frame_mask[0, 0, :, ::2, ::2].flatten().unsqueeze(0)
         v_theta = self._transformer_forward_i2v(
             model_x_t,
-            nft_batch["timesteps"],
+            nft_batch["timesteps"] * timestep_mask,
             nft_batch["prompt_embeds"],
             nft_batch["negative_prompt_embeds"],
-            image_embeds,
             self.config.guidance_scale,
         )
         v_theta = v_theta.movedim(2, 1)
@@ -76,12 +79,11 @@ class Wan22TI2VModel(Wan22Model):
         device = prompt_embeds.device
         model_dtype = next(self.transformer.parameters()).dtype
         height, width = self.config.resolution
-        if negative_prompt_embeds is not None:
+        if self.config.cfg:
             negative_prompt_embeds = negative_prompt_embeds.to(
                 device=device,
                 dtype=model_dtype,
             )
-        image_embeds = self.encode_image_condition(image_condition)
         timesteps = self._prepare_denoise_timesteps(num_steps, device)
 
         self.pipeline.vae.to(device=device)
@@ -90,7 +92,7 @@ class Wan22TI2VModel(Wan22Model):
             height=height,
             width=width,
         ).to(device=device, dtype=torch.float32)
-        latents, latent_condition = self.pipeline.prepare_latents(
+        latent_outputs = self.pipeline.prepare_latents(
             image_tensor,
             batch_size=prompt_embeds.shape[0],
             num_channels_latents=self.pipeline.vae.config.z_dim,
@@ -102,22 +104,23 @@ class Wan22TI2VModel(Wan22Model):
             generator=generator,
             latents=latents,
         )
+        latents, latent_condition, first_frame_mask = latent_outputs
 
         self.pipeline._num_timesteps = len(timesteps)
         for t in timesteps:
-            latent_model_input = torch.cat([latents, latent_condition], dim=1).to(
-                dtype=model_dtype
-            )
-            timestep = self._scheduler_to_model_timesteps(
-                t.expand(latents.shape[0]),
-                latents.to(dtype=model_dtype),
-            )
+            latent_model_input = (
+                (1 - first_frame_mask) * latent_condition
+                + first_frame_mask * latents
+            ).to(dtype=model_dtype)
+            timestep = (
+                first_frame_mask[0, 0, :, ::2, ::2] * t
+            ).flatten().unsqueeze(0)
+            timestep = timestep.expand(latents.shape[0], -1)
             noise_pred = self._transformer_forward_i2v(
                 latent_model_input,
                 timestep,
                 prompt_embeds.to(dtype=model_dtype),
                 negative_prompt_embeds,
-                image_embeds.to(dtype=model_dtype),
                 guidance_scale,
             )
             latents = self.pipeline.scheduler.step(
@@ -126,6 +129,7 @@ class Wan22TI2VModel(Wan22Model):
                 latents.float(),
                 return_dict=False,
             )[0]
+        latents = (1 - first_frame_mask) * latent_condition + first_frame_mask * latents
         videos = self.decode_latents(latents, output_type=self.config.output_type)
         if self.config.num_frames == 1:
             images = videos[:, 0]
@@ -133,22 +137,12 @@ class Wan22TI2VModel(Wan22Model):
             images = videos
         if self.config.offload_auxiliary_modules:
             self.pipeline.vae.to(device="cpu")
-            self.pipeline.image_encoder.to(device="cpu")
             torch.cuda.empty_cache()
-        return images, latents, {
+        denoise_info = {
             "latent_condition": latent_condition,
-            "image_embeds": image_embeds,
+            "first_frame_mask": first_frame_mask,
         }
-
-    @torch.no_grad()
-    def encode_image_condition(self, image_condition: Any) -> torch.Tensor:
-        device = next(self.transformer.parameters()).device
-        self.pipeline.image_encoder.to(device=device)
-        image_embeds = self.pipeline.encode_image(image_condition, device=device)
-        return image_embeds.to(
-            device=device,
-            dtype=next(self.transformer.parameters()).dtype,
-        )
+        return images, latents, denoise_info
 
     def _transformer_forward_i2v(
         self,
@@ -156,14 +150,12 @@ class Wan22TI2VModel(Wan22Model):
         timestep: torch.Tensor,
         prompt_embeds: torch.Tensor,
         negative_prompt_embeds: torch.Tensor | None,
-        image_embeds: torch.Tensor,
         guidance_scale: float,
     ) -> torch.Tensor:
         noise_pred = self._call_transformer(
             hidden_states=latents_with_condition,
             timestep=timestep,
             encoder_hidden_states=prompt_embeds,
-            encoder_hidden_states_image=image_embeds,
             return_dict=False,
         )[0]
         if self.config.cfg:
@@ -171,7 +163,6 @@ class Wan22TI2VModel(Wan22Model):
                 hidden_states=latents_with_condition,
                 timestep=timestep,
                 encoder_hidden_states=negative_prompt_embeds,
-                encoder_hidden_states_image=image_embeds,
                 return_dict=False,
             )[0]
             noise_pred = noise_uncond + guidance_scale * (noise_pred - noise_uncond)

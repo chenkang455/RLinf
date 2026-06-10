@@ -192,26 +192,21 @@ class Wan22Model(torch.nn.Module, BasePolicy):
         self,
         prompts: str | Sequence[str],
         *,
-        negative_prompts: str | Sequence[str] | None = None,
+        negative_prompts: str | Sequence[str],
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         device = next(self.transformer.parameters()).device
         self.pipeline.text_encoder.to(device=device)
-        if negative_prompts is None:
-            negative_prompt_input = None
-        else:
-            negative_prompt_input = prompt_list(negative_prompts)
         prompt_embeds, negative_prompt_embeds = self.pipeline.encode_prompt(
             prompt=prompt_list(prompts),
-            negative_prompt=negative_prompt_input,
+            negative_prompt=prompt_list(negative_prompts),
             do_classifier_free_guidance=self.config.cfg,
             num_videos_per_prompt=1,
             max_sequence_length=self.config.max_sequence_length,
             device=device,
             dtype=next(self.transformer.parameters()).dtype,
         )
-        if negative_prompt_embeds is None:
-            negative_prompt_embeds_out = None
-        else:
+        negative_prompt_embeds_out = None
+        if self.config.cfg:
             negative_prompt_embeds_out = negative_prompt_embeds.to(device)
         return prompt_embeds.to(device), negative_prompt_embeds_out
 
@@ -272,7 +267,7 @@ class Wan22Model(torch.nn.Module, BasePolicy):
             ),
             "prompt_embeds": prompt_embeds.detach(),
         }
-        if negative_prompt_embeds is not None:
+        if self.config.cfg:
             forward_inputs["negative_prompt_embeds"] = negative_prompt_embeds.detach()
         for key, value in denoise_info.items():
             forward_inputs[key] = value.detach()
@@ -312,14 +307,10 @@ class Wan22Model(torch.nn.Module, BasePolicy):
         denoise_info_chunks = []
         for start in range(0, prompt_embeds.shape[0], max_batch):
             end = start + max_batch
-            if negative_prompt_embeds is not None:
-                chunk_negative_prompt_embeds = negative_prompt_embeds[start:end]
-            else:
-                chunk_negative_prompt_embeds = None
-            if latents is not None:
-                chunk_latents = latents[start:end]
-            else:
-                chunk_latents = None
+            chunk_negative_prompt_embeds = (
+                negative_prompt_embeds[start:end] if self.config.cfg else None
+            )
+            chunk_latents = latents[start:end] if latents is not None else None
             chunk_conditions = {
                 key: value[start:end] for key, value in conditions.items()
             }
