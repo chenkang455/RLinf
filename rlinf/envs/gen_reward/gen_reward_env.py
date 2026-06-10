@@ -62,6 +62,9 @@ class GenRewardEnv(gym.Env):
         reward_cfg = cfg_require(cfg, "reward")
         self.reward_key = str(cfg_get(reward_cfg, "key", "avg"))
         self.frame_interval = int(cfg_get(reward_cfg, "frame_interval", -1))
+        self.is_multi_reward_backend = (
+            str(cfg_get(reward_cfg, "type", "single")) == "multi"
+        )
         self.reward_backend: RewardBackend = build_reward_backend(reward_cfg)
         self.image_frame_repeat = 8
         self.num_capture_samples = 3
@@ -175,7 +178,7 @@ class GenRewardEnv(gym.Env):
         score_curves = {}
         if scores is not None:
             for key, value in scores.items():
-                if key != "avg" and not key.endswith(".avg"):
+                if self.is_multi_reward_backend and key != "avg":
                     continue
                 if torch.is_tensor(value):
                     value = value.detach().cpu().float().numpy()
