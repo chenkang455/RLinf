@@ -19,6 +19,7 @@ from typing import Any
 import numpy as np
 import torch
 
+from rlinf.envs.gen_reward.rewards import frame_rewards_to_latent_rewards
 from rlinf.envs.gen_reward.rewards.generation.ocr import OCRRewardBackend
 from rlinf.envs.gen_reward.utils import (
     cfg_get,
@@ -52,27 +53,16 @@ class VideoOCRRewardBackend(OCRRewardBackend):
     ) -> dict[str, torch.Tensor]:
         task_descriptions = [record["task_description"] for record in records]
         media_array = media_to_uint8_nhwc(outputs)
-        rewards = []
+        frame_rewards = []
         for media, task_description in zip(
             media_array,
             task_descriptions,
             strict=True,
         ):
             target = extract_quoted_text(task_description)
-            if isinstance(media, np.ndarray) and media.ndim == 4:
-                frames = media
-            else:
-                frames = [media]
-            frame_rewards = [self._score_image(frame, target) for frame in frames]
-            if self.frame_interval > 0:
-                chunks = [frame_rewards[:1]] + [
-                    frame_rewards[i : i + self.frame_interval]
-                    for i in range(1, len(frame_rewards), self.frame_interval)
-                ]
-                rewards.append([float(sum(chunk) / len(chunk)) for chunk in chunks])
-            else:
-                rewards.append(float(sum(frame_rewards) / len(frame_rewards)))
+            frame_rewards.append([self._score_image(frame, target) for frame in media])
 
+        rewards = frame_rewards_to_latent_rewards(frame_rewards, self.frame_interval)
         rewards_tensor = torch.as_tensor(rewards, dtype=torch.float32)
         return {"avg": rewards_tensor, "video_ocr": rewards_tensor}
 

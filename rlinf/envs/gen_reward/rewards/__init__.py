@@ -51,6 +51,20 @@ class RewardBackend(Protocol):
         ...
 
 
+def frame_rewards_to_latent_rewards(
+    frame_rewards: np.ndarray | list[float] | list[list[float]],
+    frame_interval: int,
+) -> np.ndarray:
+    frame_rewards = np.asarray(frame_rewards, dtype=np.float32)
+    if frame_interval <= 0:
+        return frame_rewards
+    chunks = [frame_rewards[..., :1]] + [
+        frame_rewards[..., i : i + frame_interval].mean(axis=-1, keepdims=True)
+        for i in range(1, frame_rewards.shape[-1], frame_interval)
+    ]
+    return np.concatenate(chunks, axis=-1).astype(np.float32)
+
+
 class MultiRewardBackend:
     def __init__(self, reward_backends: list[tuple[str, float, RewardBackend]]):
         self.reward_backends = reward_backends
@@ -89,4 +103,5 @@ __all__ = [
     "RewardOutputs",
     "RewardRecords",
     "RewardScores",
+    "frame_rewards_to_latent_rewards",
 ]

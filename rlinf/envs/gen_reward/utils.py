@@ -239,6 +239,7 @@ def put_video_text(
                 batch_idx=batch_idx,
                 frame_idx=frame_idx,
                 width=media.shape[3],
+                num_frames=media.shape[1],
             )
             frames.append(
                 np.concatenate([media[batch_idx, frame_idx], curve_panel], axis=0)
@@ -252,6 +253,7 @@ def make_score_curve_panel(
     batch_idx: int,
     frame_idx: int,
     width: int,
+    num_frames: int,
 ) -> np.ndarray:
     row_height = 56
     right = min(12, max(1, width // 10))
@@ -301,16 +303,17 @@ def make_score_curve_panel(
         points = [point(idx, value) for idx, value in enumerate(values)]
         if len(points) > 1:
             draw.line(points, fill=color, width=3)
-        marker_x, marker_y = point(frame_idx, values[frame_idx])
+        score_idx = int(round(frame_idx * (len(values) - 1) / max(1, num_frames - 1)))
+        marker_x, marker_y = point(score_idx, values[score_idx])
         draw.ellipse(
             [marker_x - 4, marker_y - 4, marker_x + 4, marker_y + 4],
             fill=color,
         )
-        draw.text((8, row_top + 16), f"{name}: {values[frame_idx]:.3f}", fill=color)
+        draw.text((8, row_top + 16), f"{name}: {values[score_idx]:.3f}", fill=color)
         if row_idx == 0:
             draw.text(
                 (max(left, width - 115), row_top + 16),
-                f"frame: {frame_idx + 1}/{len(values)}",
+                f"frame: {frame_idx + 1}/{num_frames}",
                 fill=(80, 80, 80),
             )
 
