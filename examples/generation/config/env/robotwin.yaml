@@ -17,7 +17,9 @@ dataset:
   type: "embodied.robotwin_dataset"
   repo_id: "local/vidar_robotwin_click_bell"
   root: "/mnt/public2/chenkang/wam_rl/video_rl/vidar/vidar-robotwin/data_lerobot/click_bell/aloha_vidar_10"
-  future_times: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+  sample_mode: episode
+  future_seconds: 1.0
+  num_frames: 6
   video_backend: "pyav"
 
 reward:

@@ -16,7 +16,9 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 import torch
+from PIL import Image
 
 from rlinf.models.generation.sd3.utils import prompt_list
 from rlinf.models.generation.wan.base import Wan22Model
@@ -27,7 +29,11 @@ class Wan22TI2VModel(Wan22Model):
 
     def obs_processor(self, env_obs: Any) -> tuple[list[str], dict[str, Any]]:
         prompts = prompt_list(env_obs["task_descriptions"])
-        return prompts, {"image_condition": env_obs["main_images"]}
+        main_images = env_obs["main_images"]
+        if isinstance(main_images, list):
+            main_images = np.concatenate(main_images, axis=0)
+        main_images = [Image.fromarray(image.astype(np.uint8)) for image in main_images]
+        return prompts, {"image_condition": main_images}
 
     def nft_forward(
         self,

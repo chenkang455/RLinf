@@ -32,25 +32,42 @@ class LeRobotImageConditionedDataset(ImageConditionedDataset):
     def __init__(
         self,
         dataset: Any,
+        sample_indices: list[int] | None = None,
     ):
         self.dataset = dataset
+        self.sample_indices = sample_indices
 
     @classmethod
     def from_config(cls, cfg: Any) -> "LeRobotImageConditionedDataset":
-        future_times = [float(timestamp) for timestamp in cfg.future_times]
+        delta_timestamps = np.linspace(
+            0.0,
+            float(cfg.future_seconds),
+            int(cfg.num_frames),
+        ).tolist()
         dataset = LeRobotDataset(
             str(cfg.repo_id),
             root=cfg.root,
             episodes=getattr(cfg, "episodes", None),
-            delta_timestamps={key: future_times for key in cls.default_image_keys},
+            delta_timestamps={key: delta_timestamps for key in cls.default_image_keys},
             video_backend=getattr(cfg, "video_backend", "pyav"),
         )
-        return cls(dataset=dataset)
+        sample_indices = None
+        if getattr(cfg, "sample_mode", "frame") == "episode":
+            sample_indices = [
+                int(episode["dataset_from_index"])
+                for episode in dataset.meta.episodes
+            ]
+        return cls(dataset=dataset, sample_indices=sample_indices)
 
     def __len__(self) -> int:
-        return len(self.dataset)
+        if self.sample_indices is not None:
+            return len(self.sample_indices)
+        else:
+            return len(self.dataset)
 
     def __getitem__(self, index: int) -> EnvRecord:
+        if self.sample_indices is not None:
+            index = self.sample_indices[int(index)]
         sample = self.dataset[index]
         videos = [media_to_uint8_nhwc(sample[key]) for key in self.default_image_keys]
         video = videos[0] if len(videos) == 1 else self.compose_videos(videos)
