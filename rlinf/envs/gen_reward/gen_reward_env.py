@@ -20,11 +20,15 @@ import gym
 import numpy as np
 import torch
 
-from rlinf.envs.utils import put_text_on_image
-
 from . import build_reward_backend, build_reward_dataset
 from .rewards import RewardBackend
-from .utils import cfg_get, cfg_require, media_to_uint8_nhwc
+from .utils import (
+    cfg_get,
+    cfg_require,
+    make_future_video_comparison,
+    media_to_uint8_nhwc,
+    put_video_text,
+)
 
 
 class GenRewardEnv(gym.Env):
@@ -58,14 +62,8 @@ class GenRewardEnv(gym.Env):
         reward_cfg = cfg_require(cfg, "reward")
         self.reward_key = str(cfg_get(reward_cfg, "key", "avg"))
         self.reward_backend: RewardBackend = build_reward_backend(reward_cfg)
-        # video capture settings
-        video_cfg = cfg_get(cfg, "video_cfg", {})
-        self.image_frame_repeat = max(
-            1, int(cfg_get(video_cfg, "image_frame_repeat", 8))
-        ) # repeat the image frame to capture the video
-        self.num_capture_samples = max(
-            1, int(cfg_get(video_cfg, "num_capture_samples", 3))
-        ) # number of samples to capture the video
+        self.image_frame_repeat = 8
+        self.num_capture_samples = 3
         self._return_video: np.ndarray | None = None
         self._env_records: list[dict[str, Any]] = [] # current dataset records
         self._env_obs: dict[str, Any] | None = None # observation of the dataset
@@ -99,12 +97,14 @@ class GenRewardEnv(gym.Env):
     def step(
         self, outputs: torch.Tensor | np.ndarray | list[Any]
     ) -> tuple[dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
+        scores = self.reward_backend.score(outputs, self._env_records)
         task_descriptions = self._env_obs.get("task_descriptions")
         self._return_video = self._prepare_capture_media(
             outputs,
+            self._env_records,
             task_descriptions,
+            scores,
         )
-        scores = self.reward_backend.score(outputs, self._env_records)
         # return info
         rewards = scores[self.reward_key].float()
         truncations = torch.zeros_like(rewards, dtype=torch.bool)
@@ -132,34 +132,47 @@ class GenRewardEnv(gym.Env):
     def _prepare_capture_media(
         self,
         media: torch.Tensor | np.ndarray | list[Any],
+        records: list[dict[str, Any]],
         task_descriptions: list[str] | None = None,
+        scores: dict[str, torch.Tensor] | None = None,
     ) -> np.ndarray | None:
         media = media_to_uint8_nhwc(media)
+        has_future_video = bool(records and records[0].get("future_video") is not None)
         if media.ndim == 4:
-            media = np.repeat(media[:, None], self.image_frame_repeat, axis=1)
-        media = media[: self.num_capture_samples]
-        media = self._put_task_descriptions_on_capture_media(
-            media,
-            task_descriptions,
-        )
-        return media
+            mode = "image"
+        elif has_future_video:
+            mode = "embodied_video"
+        else:
+            mode = "video"
 
-    def _put_task_descriptions_on_capture_media(
-        self, media: np.ndarray, task_descriptions: list[str]
-    ) -> np.ndarray:
-        media = media.copy()
-        max_width = max(120, media.shape[3] - 20)
-        for batch_idx, task_description in enumerate(
-            task_descriptions[: media.shape[0]]
-        ):
-            lines = [f"task: {task_description}"]
-            for frame_idx in range(media.shape[1]):
-                media[batch_idx, frame_idx] = put_text_on_image(
-                    media[batch_idx, frame_idx],
-                    lines,
-                    max_width=max_width,
-                )
-        return media
+        if mode == "image":
+            media = np.repeat(
+                media[: self.num_capture_samples, None],
+                self.image_frame_repeat,
+                axis=1,
+            )
+        elif mode == "embodied_video":
+            media = media[: self.num_capture_samples]
+            media = make_future_video_comparison(
+                media,
+                records[: media.shape[0]],
+            )
+        else:
+            media = media[: self.num_capture_samples]
+
+        score_curves = {}
+        if scores is not None:
+            for key, value in scores.items():
+                if torch.is_tensor(value):
+                    value = value.detach().cpu().float().numpy()
+                else:
+                    value = np.asarray(value, dtype=np.float32)
+                if value.ndim == 1:
+                    value = np.repeat(value[:, None], media.shape[1], axis=1)
+                if value.ndim == 2:
+                    score_curves[key] = value[: media.shape[0]]
+
+        return put_video_text(media, task_descriptions, score_curves)
 
     def chunk_step(
         self, outputs: torch.Tensor | np.ndarray | list[Any]

@@ -18,10 +18,12 @@ from typing import Any
 
 import numpy as np
 import torch
-from PIL import Image
-
 from rlinf.envs.gen_reward.rewards import RewardBackend
-from rlinf.envs.gen_reward.utils import media_to_uint8_nhwc
+from rlinf.envs.gen_reward.utils import (
+    media_to_uint8_nhwc,
+    record_gt_video,
+    resize_video,
+)
 
 
 class VideoSimilarityRewardBackend(RewardBackend):
@@ -40,7 +42,7 @@ class VideoSimilarityRewardBackend(RewardBackend):
 
         rewards = []
         for output_video, record in zip(output_videos, records, strict=True):
-            target_video = media_to_uint8_nhwc(record["future_video"])
+            target_video = record_gt_video(record)
             rewards.append(self._video_similarity(output_video, target_video))
 
         rewards_tensor = torch.as_tensor(rewards, dtype=torch.float32)
@@ -60,18 +62,7 @@ class VideoSimilarityRewardBackend(RewardBackend):
         if output_video.shape[0] == 0:
             return 0.0
         if output_video.shape[1:3] != target_video.shape[1:3]:
-            target_video = np.stack(
-                [
-                    np.asarray(
-                        Image.fromarray(frame).resize(
-                            (output_video.shape[2], output_video.shape[1]),
-                            Image.BILINEAR,
-                        )
-                    )
-                    for frame in target_video
-                ],
-                axis=0,
-            )
+            target_video = resize_video(target_video, *output_video.shape[1:3])
         mse = np.mean(
             (output_video.astype(np.float32) - target_video.astype(np.float32)) ** 2
         )
