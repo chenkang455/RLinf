@@ -20,6 +20,7 @@ dataset:
   sample_mode: episode
   future_seconds: 1.0
   num_frames: 6
+  prompt_prefix: "The whole scene is in a realistic, industrial art style with three views: a fixed rear camera, a movable left arm camera, and a movable right arm camera. The aloha robot is currently performing the following task: "
   video_backend: "pyav"
 
 reward:

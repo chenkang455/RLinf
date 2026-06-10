@@ -19,7 +19,7 @@ from typing import Any
 
 import numpy as np
 import torch
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 from rlinf.envs.utils import put_text_on_image
 
@@ -109,6 +109,23 @@ def record_gt_video(record: dict[str, Any]) -> np.ndarray:
     )
 
 
+def prepare_video_pair(
+    pred_video: np.ndarray,
+    record: dict[str, Any],
+) -> tuple[np.ndarray, np.ndarray]:
+    gt_video = record_gt_video(record)
+    if pred_video.shape[0] != gt_video.shape[0]:
+        raise ValueError(
+            "Pred/GT videos must have the same number of frames, "
+            f"got pred={pred_video.shape[0]} gt={gt_video.shape[0]}."
+        )
+    if pred_video.shape[0] == 0:
+        raise ValueError("Pred/GT videos are empty.")
+    if pred_video.shape[1:3] != gt_video.shape[1:3]:
+        gt_video = resize_video(gt_video, *pred_video.shape[1:3])
+    return pred_video, gt_video
+
+
 def make_side_by_side_video(
     left_video: np.ndarray,
     right_video: np.ndarray,
@@ -145,8 +162,7 @@ def make_future_video_comparison(
     return np.stack(
         [
             make_side_by_side_video(
-                pred_video,
-                record_gt_video(record),
+                *prepare_video_pair(pred_video, record),
                 "pred",
                 "gt",
             )
@@ -156,6 +172,37 @@ def make_future_video_comparison(
     )
 
 
+def put_header_text(image: np.ndarray, text: str, max_width: int) -> np.ndarray:
+    image = Image.fromarray(image.copy())
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default(size=20)
+    lines = []
+    current_line = []
+    for word in str(text).split():
+        candidate = " ".join(current_line + [word])
+        if font.getlength(candidate) <= max_width:
+            current_line.append(word)
+        else:
+            if current_line:
+                lines.append(" ".join(current_line))
+            current_line = [word]
+    if current_line:
+        lines.append(" ".join(current_line))
+
+    line_gap = 8
+    line_heights = [
+        draw.textbbox((0, 0), line, font=font)[3]
+        - draw.textbbox((0, 0), line, font=font)[1]
+        for line in lines
+    ]
+    total_height = sum(line_heights) + line_gap * max(0, len(lines) - 1)
+    y = max(4, (image.height - total_height) // 2)
+    for line, line_height in zip(lines, line_heights, strict=True):
+        draw.text((10, y), text=line, fill=(0, 0, 0), font=font)
+        y += line_height + line_gap
+    return np.asarray(image)
+
+
 def put_video_text(
     media: np.ndarray,
     task_descriptions: list[str] | None = None,
@@ -163,15 +210,22 @@ def put_video_text(
 ) -> np.ndarray:
     media = media.copy()
     max_width = max(120, media.shape[3] - 20)
-    for batch_idx in range(media.shape[0]):
-        if task_descriptions is None or batch_idx >= len(task_descriptions):
-            continue
-        for frame_idx in range(media.shape[1]):
-            media[batch_idx, frame_idx] = put_text_on_image(
-                media[batch_idx, frame_idx],
-                [f"task: {task_descriptions[batch_idx]}"],
-                max_width=max_width,
-            )
+    if task_descriptions is not None:
+        media_with_header = []
+        for batch_idx in range(media.shape[0]):
+            header = np.full((72, media.shape[3], 3), 245, dtype=np.uint8)
+            if batch_idx < len(task_descriptions):
+                header = put_header_text(
+                    header,
+                    task_descriptions[batch_idx],
+                    max_width=max_width,
+                )
+            frames = [
+                np.concatenate([header, media[batch_idx, frame_idx]], axis=0)
+                for frame_idx in range(media.shape[1])
+            ]
+            media_with_header.append(np.stack(frames, axis=0))
+        media = np.stack(media_with_header, axis=0)
 
     if not score_curves:
         return media
@@ -211,7 +265,7 @@ def make_score_curve_panel(
         (211, 94, 96),
         (129, 114, 179),
     ]
-    panel = np.full((row_height * len(score_curves), width, 3), 255, dtype=np.uint8)
+    panel = np.full((row_height * (len(score_curves) + 1), width, 3), 255, dtype=np.uint8)
     image = Image.fromarray(panel)
     draw = ImageDraw.Draw(image)
 

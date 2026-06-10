@@ -33,9 +33,11 @@ class LeRobotImageConditionedDataset(ImageConditionedDataset):
         self,
         dataset: Any,
         sample_indices: list[int] | None = None,
+        prompt_prefix: str = "",
     ):
         self.dataset = dataset
         self.sample_indices = sample_indices
+        self.prompt_prefix = prompt_prefix
 
     @classmethod
     def from_config(cls, cfg: Any) -> "LeRobotImageConditionedDataset":
@@ -57,7 +59,11 @@ class LeRobotImageConditionedDataset(ImageConditionedDataset):
                 int(episode["dataset_from_index"])
                 for episode in dataset.meta.episodes
             ]
-        return cls(dataset=dataset, sample_indices=sample_indices)
+        return cls(
+            dataset=dataset,
+            sample_indices=sample_indices,
+            prompt_prefix=getattr(cfg, "prompt_prefix", ""),
+        )
 
     def __len__(self) -> int:
         if self.sample_indices is not None:
@@ -75,7 +81,7 @@ class LeRobotImageConditionedDataset(ImageConditionedDataset):
         if isinstance(task, (list, tuple)):
             task = task[0] if task else ""
         return {
-            "task_description": str(task),
+            "task_description": self.prompt_prefix + str(task),
             "main_image": video[0],
             "future_video": video[1:] if video.shape[0] > 1 else None,
         }

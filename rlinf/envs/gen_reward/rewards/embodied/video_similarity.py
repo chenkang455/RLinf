@@ -21,8 +21,7 @@ import torch
 from rlinf.envs.gen_reward.rewards import RewardBackend
 from rlinf.envs.gen_reward.utils import (
     media_to_uint8_nhwc,
-    record_gt_video,
-    resize_video,
+    prepare_video_pair,
 )
 
 
@@ -40,33 +39,25 @@ class VideoSimilarityRewardBackend(RewardBackend):
     ) -> dict[str, torch.Tensor]:
         output_videos = media_to_uint8_nhwc(outputs)
 
-        rewards = []
+        frame_rewards = []
         for output_video, record in zip(output_videos, records, strict=True):
-            target_video = record_gt_video(record)
-            rewards.append(self._video_similarity(output_video, target_video))
+            output_video, target_video = prepare_video_pair(output_video, record)
+            frame_rewards.append(self._frame_similarities(output_video, target_video))
 
-        rewards_tensor = torch.as_tensor(rewards, dtype=torch.float32)
-        return {"avg": rewards_tensor, "video_similarity": rewards_tensor}
+        frame_rewards_tensor = torch.from_numpy(np.stack(frame_rewards)).float()
+        avg_rewards = frame_rewards_tensor.mean(dim=1)
+        return {"avg": avg_rewards, "video_similarity": frame_rewards_tensor}
 
-    def _video_similarity(
+    def _frame_similarities(
         self,
         output_video: np.ndarray,
         target_video: np.ndarray,
-    ) -> float:
-        if output_video.shape[0] != target_video.shape[0]:
-            raise ValueError(
-                "VideoSimilarityRewardBackend expects output and target videos "
-                f"to have the same number of frames, got output={output_video.shape[0]} "
-                f"target={target_video.shape[0]}."
-            )
-        if output_video.shape[0] == 0:
-            return 0.0
-        if output_video.shape[1:3] != target_video.shape[1:3]:
-            target_video = resize_video(target_video, *output_video.shape[1:3])
+    ) -> np.ndarray:
         mse = np.mean(
-            (output_video.astype(np.float32) - target_video.astype(np.float32)) ** 2
+            (output_video.astype(np.float32) - target_video.astype(np.float32)) ** 2,
+            axis=(1, 2, 3),
         )
-        return float(np.clip(1.0 - mse / (255.0**2), 0.0, 1.0))
+        return np.clip(1.0 - mse / (255.0**2), 0.0, 1.0).astype(np.float32)
 
 
 REWARD_CLS = VideoSimilarityRewardBackend
