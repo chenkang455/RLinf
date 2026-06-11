@@ -255,7 +255,7 @@ def make_score_curve_panel(
     width: int,
     num_frames: int,
 ) -> np.ndarray:
-    row_height = 56
+    row_height = 65
     right = min(12, max(1, width // 10))
     left = min(max(40, width // 5), max(1, width - right - 1))
     plot_width = max(1, width - left - right)
