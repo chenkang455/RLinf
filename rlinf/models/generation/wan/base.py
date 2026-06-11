@@ -249,12 +249,13 @@ class Wan22Model(torch.nn.Module, BasePolicy):
         if is_eval:
             return images, {"prev_values": None}
 
+        batch_size = final_latents.shape[0]
         num_train_timesteps = min(
             max(1, int(self.config.num_steps * self.config.timestep_fraction)),
             num_steps,
         )
         old_logprobs = torch.zeros(
-            final_latents.shape[0],
+            batch_size,
             num_train_timesteps,
             device=final_latents.device,
             dtype=final_latents.dtype,

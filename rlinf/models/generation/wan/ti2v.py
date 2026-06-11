@@ -30,6 +30,8 @@ class Wan22TI2VModel(Wan22Model):
     def obs_processor(self, env_obs: Any) -> tuple[list[str], dict[str, Any]]:
         prompts = prompt_list(env_obs["task_descriptions"])
         main_images = env_obs["main_images"]
+        if torch.is_tensor(main_images):
+            main_images = main_images.detach().cpu().numpy()
         if isinstance(main_images, list):
             main_images = np.concatenate(main_images, axis=0)
         main_images = [Image.fromarray(image.astype(np.uint8)) for image in main_images]
@@ -111,6 +113,10 @@ class Wan22TI2VModel(Wan22Model):
             latents=latents,
         )
         latents, latent_condition, first_frame_mask = latent_outputs
+        first_frame_mask = first_frame_mask.expand(
+            latents.shape[0],
+            *first_frame_mask.shape[1:],
+        ).contiguous()
 
         self.pipeline._num_timesteps = len(timesteps)
         for t in timesteps:

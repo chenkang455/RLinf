@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+import torch
 
 EnvRecord = dict[str, Any]
 EnvRecords = list[EnvRecord]
@@ -100,10 +101,10 @@ class ImageConditionedDataset(TextDataset):
     ) -> EnvObs:
         """Convert image-conditioned env records into rollout observations."""
         env_obs = super().records_to_env_obs(records)
-        env_obs["main_images"] = np.stack(
+        env_obs["main_images"] = torch.from_numpy(np.stack(
             [record["main_image"] for record in records],
             axis=0,
-        )
+        ))
         return env_obs
 
 
