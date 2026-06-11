@@ -23,11 +23,7 @@ import torch.nn.functional as F
 
 from rlinf.envs.gen_reward.rewards import FRAME_LEVEL, RewardBackend
 from rlinf.envs.gen_reward.rewards.embodied.models.vidar_dim import IDM
-from rlinf.envs.gen_reward.utils import (
-    cfg_get,
-    media_to_uint8_nhwc,
-    prepare_video_pair,
-)
+from rlinf.envs.gen_reward.utils import cfg_get, media_to_uint8_nhwc
 
 
 class ActionSimilarityRewardBackend(RewardBackend):
@@ -73,9 +69,12 @@ class ActionSimilarityRewardBackend(RewardBackend):
         output_videos = media_to_uint8_nhwc(outputs)
         frame_rewards = []
         for output_video, record in zip(output_videos, records, strict=True):
-            output_video, target_video = prepare_video_pair(output_video, record)
             pred_actions = self._predict_actions(output_video)
-            target_actions = self._predict_actions(target_video)
+            target_actions = torch.as_tensor(
+                record["action"],
+                device=self.device,
+                dtype=torch.float32,
+            )
             frame_rewards.append(
                 self._action_similarity(pred_actions, target_actions)
                 .detach()

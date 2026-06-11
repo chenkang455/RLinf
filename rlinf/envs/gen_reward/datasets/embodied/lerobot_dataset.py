@@ -28,6 +28,7 @@ class LeRobotImageConditionedDataset(ImageConditionedDataset):
 
     default_image_keys = ("observation.images.front",)
     default_task_key = "task"
+    default_action_key = "action"
 
     def __init__(
         self,
@@ -36,12 +37,14 @@ class LeRobotImageConditionedDataset(ImageConditionedDataset):
         future_seconds: float,
         num_frames: int,
         prompt_prefix: str = "",
+        action_key: str = "action",
     ):
         self.dataset = dataset
         self.sample_mode = sample_mode
         self.future_seconds = future_seconds
         self.num_frames = num_frames
         self.prompt_prefix = prompt_prefix
+        self.action_key = action_key
         self.episode_ranges = self._episode_ranges()
 
     @classmethod
@@ -65,6 +68,7 @@ class LeRobotImageConditionedDataset(ImageConditionedDataset):
             future_seconds=future_seconds,
             num_frames=int(cfg.num_frames),
             prompt_prefix=getattr(cfg, "prompt_prefix", ""),
+            action_key=getattr(cfg, "action_key", cls.default_action_key),
         )
 
     def __len__(self) -> int:
@@ -102,6 +106,7 @@ class LeRobotImageConditionedDataset(ImageConditionedDataset):
             "task_description": self.prompt_prefix + str(task),
             "main_image": video[0],
             "future_video": video[1:] if video.shape[0] > 1 else None,
+            "action": np.stack([sample[self.action_key] for sample in samples], axis=0),
         }
 
     def _episode_ranges(self) -> list[tuple[int, int]]:

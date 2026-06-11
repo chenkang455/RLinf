@@ -17,8 +17,8 @@ hydra:
 cluster:
   num_nodes: 1
   component_placement:
-    actor: 1
-    rollout: 2
+    actor: 2
+    rollout: 6
     env:
       node_group: node
       placement: 0
@@ -28,7 +28,7 @@ runner:
   logger:
     log_path: "../results"
     project_name: rlinf
-    experiment_name: "vidar_robotwin_nft_video_similarity_action_similarity_smoke"
+    experiment_name: "vidar_robotwin_nft_action_smooth"
     logger_backends: ["tensorboard"]
   max_epochs: 1
   max_steps: -1
@@ -111,24 +111,15 @@ env:
       future_seconds: -1
       num_frames: 61
     reward:
-      type: "multi"
-      model: null
+      type: "single"
+      model: "embodied.action_smoothness"
       key: "avg"
       frame_interval: 4
-      rewards:
-        - model: "embodied.video_similarity"
-          weight: 1.0
-        - model: "embodied.action_similarity"
-          weight: 0.2
-          checkpoint_path: "/mnt/public2/chenkang/wam_rl/checkpoints/vidar_ckpts/idm.pt"
-          device: "cuda"
-          temperature: 1.0
-        - model: "embodied.action_smoothness"
-          support_type: "frame_level"
-          weight: 0.1
-          checkpoint_path: "/mnt/public2/chenkang/wam_rl/checkpoints/vidar_ckpts/idm.pt"
-          device: "cuda"
-          fps: 30.0
+      support_type: "frame_level"
+      checkpoint_path: "/mnt/public2/chenkang/wam_rl/checkpoints/vidar_ckpts/idm.pt"
+      device: "cuda"
+      fps: 30.0
+      return_joint_name: idm
 
 rollout:
   group_name: "RolloutGroup"

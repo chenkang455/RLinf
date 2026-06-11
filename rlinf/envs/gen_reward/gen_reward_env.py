@@ -66,8 +66,8 @@ class GenRewardEnv(gym.Env):
             str(cfg_get(reward_cfg, "type", "single")) == "multi"
         )
         self.reward_backend: RewardBackend = build_reward_backend(reward_cfg)
-        self.image_frame_repeat = 8
-        self.num_capture_samples = 3
+        self.image_frame_repeat = 9
+        self.num_capture_samples = 2
         self._return_video: np.ndarray | None = None
         self._env_records: list[dict[str, Any]] = [] # current dataset records
         self._env_obs: dict[str, Any] | None = None # observation of the dataset

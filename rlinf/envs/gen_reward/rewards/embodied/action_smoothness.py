@@ -32,21 +32,11 @@ class ActionSmoothnessRewardBackend(ActionSimilarityRewardBackend):
     supported_reward_levels = (FRAME_LEVEL, VIDEO_LEVEL)
     support_type = FRAME_LEVEL
 
-    def __init__(
-        self,
-        idm: torch.nn.Module,
-        device: torch.device,
-        temperature: float = 1.0,
-        fps: float = 16.0,
-    ):
-        super().__init__(idm=idm, device=device, temperature=temperature)
-        self.dt = 1.0 / float(fps)
-        self.support_type = FRAME_LEVEL
-
     @classmethod
     def from_config(cls, cfg: Any) -> "ActionSmoothnessRewardBackend":
         backend = super().from_config(cfg)
-        backend.dt = 1.0 / float(cfg_get(cfg, "fps", 16.0))
+        backend.dt = 1.0 / float(cfg_get(cfg, "fps", 30.0))
+        backend.joint_name = cfg_get(cfg, "return_joint_name", None)
         return backend
 
     def score(
@@ -56,7 +46,9 @@ class ActionSmoothnessRewardBackend(ActionSimilarityRewardBackend):
     ) -> dict[str, torch.Tensor]:
         output_videos = media_to_uint8_nhwc(outputs)
         rewards = []
-        for output_video in output_videos:
+        action_metrics = []
+        for output_video, record in zip(output_videos, records, strict=True):
+            # smooth action reward
             actions = self._predict_actions(output_video)
             if self.support_type == FRAME_LEVEL:
                 reward = self._frame_action_smoothness(actions)
@@ -65,9 +57,19 @@ class ActionSmoothnessRewardBackend(ActionSimilarityRewardBackend):
             else:
                 raise ValueError(f"Unsupported action smoothness support_type: {self.support_type}")
             rewards.append(reward.detach().cpu())
+            # action curve
+            if self.joint_name == "idm":
+                action_metrics.append(actions.detach().cpu())
+            elif self.joint_name == "gt":
+                action_metrics.append(torch.as_tensor(record["action"]).float())
 
         rewards_tensor = torch.stack(rewards).float()
-        return {"avg": rewards_tensor, "action_smoothness": rewards_tensor}
+        scores = {"avg": rewards_tensor, "action_smoothness": rewards_tensor}
+        if self.joint_name is not None:
+            action_tensor = torch.stack(action_metrics).float()
+            for joint_idx in range(action_tensor.shape[-1]):
+                scores[f"joint_{joint_idx}"] = action_tensor[..., joint_idx]
+        return scores
 
     def _frame_action_smoothness(self, actions: torch.Tensor) -> torch.Tensor:
         num_frames = actions.shape[0]
