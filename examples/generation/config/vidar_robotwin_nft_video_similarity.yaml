@@ -17,7 +17,9 @@ hydra:
 cluster:
   num_nodes: 1
   component_placement:
-    actor,env,rollout: all
+    actor: all
+    rollout: all
+    env: all
 
 runner:
   task_type: embodied
@@ -93,12 +95,12 @@ env:
   group_name: "EnvGroup"
   enable_offload: False
   train:
-    total_num_envs: 8
+    total_num_envs: 32
     group_size: ${algorithm.group_size}
     max_episode_steps: 1
     max_steps_per_rollout_epoch: 16
     video_cfg:
-      save_video: False
+      save_video: True
     dataset:
       type: "embodied.robotwin_dataset"
       repo_id: "local/aloha_vidar_v1_10eps"
@@ -128,7 +130,7 @@ actor:
   group_name: "ActorGroup"
   training_backend: "fsdp"
   micro_batch_size: 1
-  global_batch_size: 8
+  global_batch_size: 32
   seed: 42
   enable_offload: False
 
@@ -156,13 +158,14 @@ actor:
       lora_rank: 32
       lora_alpha: 64
       lora_path: null
-      offload_auxiliary_modules: False
+      offload_auxiliary_modules: True
+      enable_vae_tiling: True
       max_generation_batch_size: 1
       compile_transformer_forward: False
 
   optim:
-    lr: 4.0e-4
-    value_lr: 3.0e-4
+    lr: 1.0e-5
+    value_lr: 1.0e-5
     adam_beta1: 0.9
     adam_beta2: 0.999
     adam_eps: 1.0e-08

@@ -63,7 +63,7 @@ class Wan22Config:
             "ffn.net.2",
         ]
     )
-    offload_auxiliary_modules: bool = True
+    enable_vae_tiling: bool = False
 
 
 class Wan22Model(torch.nn.Module, BasePolicy):
@@ -394,6 +394,8 @@ class Wan22Model(torch.nn.Module, BasePolicy):
             latents.device, latents.dtype
         )
         latents = latents / latents_std + latents_mean
+        if self.config.enable_vae_tiling:
+            self.pipeline.vae.enable_tiling()
         video = self.pipeline.vae.decode(latents, return_dict=False)[0]
         return self.pipeline.video_processor.postprocess_video(video, output_type)
 
