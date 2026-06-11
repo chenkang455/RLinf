@@ -63,6 +63,7 @@ class Wan22Config:
             "ffn.net.2",
         ]
     )
+    offload_auxiliary_modules: bool = False
     enable_vae_tiling: bool = False
 
 
