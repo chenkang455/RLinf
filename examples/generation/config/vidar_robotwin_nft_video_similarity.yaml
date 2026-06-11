@@ -26,9 +26,9 @@ runner:
   logger:
     log_path: "../results"
     project_name: rlinf
-    experiment_name: "vidar_robotwin_nft_video_similarity_aloha_vidar_v1_10eps"
+    experiment_name: "vidar_robotwin_nft_video_similarity_robotwin_vidar_v1_5task_10eps"
     logger_backends: ["tensorboard"]
-  max_epochs: 100
+  max_epochs: 3
   max_steps: -1
   only_eval: False
   val_check_interval: -1
@@ -103,8 +103,8 @@ env:
       save_video: True
     dataset:
       type: "embodied.robotwin_dataset"
-      repo_id: "local/aloha_vidar_v1_10eps"
-      root: "/mnt/public2/chenkang/wam_rl/video_rl/vidar/vidar-robotwin/data_lerobot/aloha_vidar_v1_10eps"
+      repo_id: "local/robotwin_vidar_v1_5task_10eps"
+      root: "/mnt/public2/chenkang/wam_rl/video_rl/vidar/vidar-robotwin/data_lerobot/robotwin_vidar_v1_5task_10eps"
       sample_mode: episode
       future_seconds: -1
       num_frames: 61
