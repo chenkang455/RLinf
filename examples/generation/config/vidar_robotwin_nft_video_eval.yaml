@@ -102,6 +102,7 @@ env:
     max_episode_steps: 1
     max_steps_per_rollout_epoch: 16
     is_eval: True
+    fps: 10
     video_cfg:
       save_video: True
       info_on_video: False
