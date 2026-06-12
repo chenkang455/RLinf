@@ -17,22 +17,20 @@ hydra:
 cluster:
   num_nodes: 1
   component_placement:
-    actor: 2
-    rollout: 6
-    env:
-      node_group: node
-      placement: 0
+    actor: all
+    rollout: all
+    env: all
 
 runner:
   task_type: embodied
   logger:
     log_path: "../results"
     project_name: rlinf
-    experiment_name: "vidar_robotwin_nft_action_smooth"
+    experiment_name: "vidar_robotwin_nft_video_progress_eval"
     logger_backends: ["tensorboard"]
   max_epochs: 1
   max_steps: -1
-  only_eval: False
+  only_eval: True
   val_check_interval: -1
   save_interval: -1
   resume_dir: null
@@ -46,7 +44,7 @@ algorithm:
   group_size: 1
   reward_coef: 1.0
   rollout_epoch: 1
-  eval_rollout_epoch: 1
+  eval_rollout_epoch: 6
 
   reward_type: action_level
   logprob_type: token_level
@@ -96,30 +94,35 @@ algorithm:
 env:
   group_name: "EnvGroup"
   enable_offload: False
-  train:
-    total_num_envs: 1
-    group_size: ${algorithm.group_size}
+  eval:
+    total_num_envs: 8
+    group_size: 1
+    auto_reset: False
+    ignore_terminations: False
     max_episode_steps: 1
     max_steps_per_rollout_epoch: 16
+    is_eval: True
     video_cfg:
       save_video: True
+      info_on_video: False
+      video_base_dir: ${runner.logger.log_path}/video/eval
     dataset:
       type: "embodied.robotwin_dataset"
-      repo_id: "local/robotwin_vidar_v1_5task_10eps"
-      root: "/mnt/public2/chenkang/wam_rl/video_rl/vidar/vidar-robotwin/data_lerobot/robotwin_vidar_v1_5task_10eps"
+      repo_id: "local/robotwin_vidar_demo_3task_50eps"
+      root: "/mnt/public2/chenkang/wam_rl/video_rl/vidar/vidar-robotwin/data_lerobot/robotwin_vidar_demo_3task_50eps"
       sample_mode: episode
       future_seconds: -1
       num_frames: 61
     reward:
       type: "single"
-      model: "embodied.action_smoothness"
+      model: "embodied.video_progress"
       key: "avg"
       frame_interval: 4
       support_type: "frame_level"
-      checkpoint_path: "/mnt/public2/chenkang/wam_rl/checkpoints/vidar_ckpts/idm.pt"
+      model_path: "/mnt/public2/chenkang/wam_rl/video_rl/vidar/vidar-progress/assets/siglip2-so400m-patch14-384"
+      checkpoint_path: "/mnt/public2/chenkang/wam_rl/video_rl/vidar/vidar-progress/assets/robotwin_progress_checkpoint-732"
       device: "cuda"
-      fps: 30.0
-      return_joint_name: idm
+      batch_size: 32
 
 rollout:
   group_name: "RolloutGroup"
@@ -137,14 +140,13 @@ actor:
   group_name: "ActorGroup"
   training_backend: "fsdp"
   micro_batch_size: 1
-  global_batch_size: 1
+  global_batch_size: 8
   seed: 42
   enable_offload: False
 
   model:
     model_path: "/mnt/public2/chenkang/wam_rl/checkpoints/Wan2.2-TI2V-5B-Diffusers"
     precision: "bf16"
-    # 1 first-frame chunk + ceil((num_frames - 1) / frame_interval).
     num_action_chunks: 16
     wan22_ti2v_5b:
       condition_mode: "ti2v"
@@ -161,17 +163,18 @@ actor:
       cfg: False
       max_sequence_length: 256
       output_type: "pt"
-      use_lora: True
+      use_lora: False
       lora_rank: 32
       lora_alpha: 64
       lora_path: null
-      offload_auxiliary_modules: False
+      offload_auxiliary_modules: True
+      enable_vae_tiling: True
       max_generation_batch_size: 1
       compile_transformer_forward: False
 
   optim:
-    lr: 4.0e-4
-    value_lr: 3.0e-4
+    lr: 1.0e-5
+    value_lr: 1.0e-5
     adam_beta1: 0.9
     adam_beta2: 0.999
     adam_eps: 1.0e-08

@@ -76,11 +76,11 @@ class GenRewardEnv(gym.Env):
         return
 
     def _next_group_indices(self) -> np.ndarray:
-        if self.is_eval:
-            start = self._cursor + self.seed_offset * self.num_group
-            self._cursor += self.num_group * self.total_num_processes
-            indices = np.arange(start, start + self.num_group)
-            return indices % len(self.dataset)
+        # if self.is_eval:
+        #     start = self._cursor + self.seed_offset * self.num_group
+        #     self._cursor += self.num_group * self.total_num_processes
+        #     indices = np.arange(start, start + self.num_group)
+        #     return indices % len(self.dataset)
         return self._generator.integers(
             0,
             len(self.dataset),
