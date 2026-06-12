@@ -213,7 +213,7 @@ def put_video_text(
     if task_descriptions is not None:
         media_with_header = []
         for batch_idx in range(media.shape[0]):
-            header = np.full((72, media.shape[3], 3), 245, dtype=np.uint8)
+            header = np.full((112, media.shape[3], 3), 245, dtype=np.uint8)
             if batch_idx < len(task_descriptions):
                 header = put_header_text(
                     header,

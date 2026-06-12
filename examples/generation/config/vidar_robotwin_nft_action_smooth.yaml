@@ -105,7 +105,7 @@ env:
       save_video: True
     dataset:
       type: "embodied.robotwin_dataset"
-      repo_id: "local/vidar_robotwin_click_bell"
+      repo_id: "local/robotwin_vidar_v1_5task_10eps"
       root: "/mnt/public2/chenkang/wam_rl/video_rl/vidar/vidar-robotwin/data_lerobot/robotwin_vidar_v1_5task_10eps"
       sample_mode: episode
       future_seconds: -1

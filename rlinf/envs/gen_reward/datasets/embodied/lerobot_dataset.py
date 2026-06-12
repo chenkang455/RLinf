@@ -29,6 +29,7 @@ class LeRobotImageConditionedDataset(ImageConditionedDataset):
     default_image_keys = ("observation.images.front",)
     default_task_key = "task"
     default_action_key = "action"
+    default_prompt_prefix = ""
 
     def __init__(
         self,
@@ -67,7 +68,7 @@ class LeRobotImageConditionedDataset(ImageConditionedDataset):
             sample_mode=sample_mode,
             future_seconds=future_seconds,
             num_frames=int(cfg.num_frames),
-            prompt_prefix=getattr(cfg, "prompt_prefix", ""),
+            prompt_prefix=getattr(cfg, "prompt_prefix", cls.default_prompt_prefix),
             action_key=getattr(cfg, "action_key", cls.default_action_key),
         )
 
@@ -99,15 +100,19 @@ class LeRobotImageConditionedDataset(ImageConditionedDataset):
             videos.append(np.stack(frames, axis=0))
 
         video = videos[0] if len(videos) == 1 else self.compose_videos(videos)
-        task = samples[0].get(self.default_task_key, "")
-        if isinstance(task, (list, tuple)):
-            task = task[0] if task else ""
-        return {
-            "task_description": self.prompt_prefix + str(task),
+        sample0 = samples[0]
+        task = sample0[self.default_task_key]
+        record = {
+            "task_description": self.format_task_description(str(task), sample0),
             "main_image": video[0],
             "future_video": video[1:] if video.shape[0] > 1 else None,
             "action": np.stack([sample[self.action_key] for sample in samples], axis=0),
         }
+        record["arm_tag"] = sample0["arm_tag"]
+        return record
+
+    def format_task_description(self, task: str, sample: dict[str, Any]) -> str:
+        return self.prompt_prefix + task
 
     def _episode_ranges(self) -> list[tuple[int, int]]:
         ranges = []

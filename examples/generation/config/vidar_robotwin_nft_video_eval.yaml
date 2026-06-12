@@ -114,8 +114,8 @@ env:
       video_base_dir: ${runner.logger.log_path}/video/eval
     dataset:
       type: "embodied.robotwin_dataset"
-      repo_id: "local/robotwin_vidar_v2_10task_50eps"
-      root: "/mnt/public2/chenkang/wam_rl/video_rl/vidar/vidar-robotwin/data_lerobot/robotwin_vidar_v2_10task_50eps"
+      repo_id: "local/robotwin_vidar_v1_5task_10eps"
+      root: "/mnt/public2/chenkang/wam_rl/video_rl/vidar/vidar-robotwin/data_lerobot/robotwin_vidar_v1_5task_10eps"
       sample_mode: episode
       future_seconds: -1
       num_frames: 61

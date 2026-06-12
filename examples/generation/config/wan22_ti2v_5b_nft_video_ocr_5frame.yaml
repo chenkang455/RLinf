@@ -39,7 +39,7 @@ algorithm:
   kl_penalty: kl
   kl_penalty_type: kl
 
-  group_size: 24
+  group_size: 8
   reward_coef: 1.0
   rollout_epoch: 6
   eval_rollout_epoch: 8
@@ -70,7 +70,7 @@ algorithm:
   nft_weight_scale: 1.0
   nft_target_space: x0
   nft_xcur_source: resample
-  nft_tau: 1.0
+  nft_tau: [1.0, 0.01, 0, 70]
   nft_clip_ratio: 0.1
   recompute_v: False
   nft_gather_type: action_level

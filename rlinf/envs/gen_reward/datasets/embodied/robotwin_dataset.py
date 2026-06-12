@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import cv2
 
@@ -25,11 +27,28 @@ from rlinf.envs.gen_reward.datasets.embodied.lerobot_dataset import (
 class RobotwinDataset(LeRobotImageConditionedDataset):
     """RoboTwin dataset stored in standard LeRobot format."""
 
+    default_prompt_prefix = (
+        "The whole scene is in a realistic, industrial art style with three views: "
+        "a fixed rear camera, a movable left arm camera, and a movable right arm "
+        "camera. The aloha robot is currently performing the following task: "
+    )
     default_image_keys = (
         "observation.images.cam_high",
         "observation.images.cam_left_wrist",
         "observation.images.cam_right_wrist",
     )
+
+    def format_task_description(self, task: str, sample: dict[str, Any]) -> str:
+        task = task.strip()
+        if task:
+            task = task[0].lower() + task[1:]
+
+        arm_tag = str(sample.get("arm_tag", "")).strip().lower()
+        if arm_tag in ("left", "right"):
+            task = f"using {arm_tag} arm, {task}"
+        if task and not task.endswith("."):
+            task += "."
+        return self.prompt_prefix + task
 
     def compose_views(self, views: list[np.ndarray]) -> np.ndarray:
         if len(views) < 3:
