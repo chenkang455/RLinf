@@ -20,16 +20,20 @@ from typing import Any
 import numpy as np
 import torch
 
-from rlinf.envs.gen_reward.rewards import FRAME_LEVEL, VIDEO_LEVEL, RewardBackend
+from rlinf.envs.gen_reward.rewards import (
+    FRAME_LEVEL,
+    VIDEO_LEVEL,
+    VideoRewardBackendBase,
+)
 from rlinf.envs.gen_reward.rewards.embodied.models.progress_model import SigLIPProgressPredictor
-from rlinf.envs.gen_reward.utils import cfg_get, cfg_require, media_to_uint8_nhwc
+from rlinf.envs.gen_reward.utils import cfg_get, cfg_require
 
 
-class ProgressRewardBackend(RewardBackend):
+class ProgressRewardBackend(VideoRewardBackendBase):
     """SigLIP progress-model reward for RGB videos."""
 
     supported_reward_levels = (FRAME_LEVEL, VIDEO_LEVEL)
-    support_type = FRAME_LEVEL
+    reward_type = FRAME_LEVEL
 
     def __init__(
         self,
@@ -38,7 +42,7 @@ class ProgressRewardBackend(RewardBackend):
         self.progress_model = progress_model
 
     @classmethod
-    def from_config(cls, cfg: Any) -> "ProgressRewardBackend":
+    def _from_config(cls, cfg: Any) -> "ProgressRewardBackend":
         model_path = Path(str(cfg_require(cfg, "model_path")))
         checkpoint_path = Path(str(cfg_require(cfg, "checkpoint_path")))
         progress_model = SigLIPProgressPredictor.from_pretrained(
@@ -49,22 +53,19 @@ class ProgressRewardBackend(RewardBackend):
         )
         return cls(progress_model=progress_model)
 
-    def score(
+    def _score_video(
         self,
-        outputs: torch.Tensor | np.ndarray | list[Any],
-        records: list[dict[str, Any]],
+        video: np.ndarray,
+        record: dict[str, Any],
     ) -> dict[str, torch.Tensor]:
-        videos = media_to_uint8_nhwc(outputs)
-        progress_rows = []
-        avg_rows = []
-        for video in videos:
-            progress = self.progress_model.predict_video(video)
-            progress_tensor = torch.from_numpy(progress).float()
-            progress_rows.append(progress_tensor)
-            avg_rows.append(progress_tensor[-1:].clone())
-        progress_rewards = torch.stack(progress_rows, dim=0)
-        avg_rewards = torch.stack(avg_rows, dim=0)
-        return {"avg": avg_rewards, "progress": progress_rewards}
+        progress = self.progress_model.predict_video(video)
+        progress_tensor = torch.from_numpy(progress).float()
+        if self.reward_type == VIDEO_LEVEL:
+            reward = progress_tensor[-1].repeat(progress_tensor.shape[0])
+        elif self.reward_type == FRAME_LEVEL:
+            reward = progress_tensor
+        return {"avg": reward, "progress": progress_tensor}
+
 
 
 REWARD_CLS = ProgressRewardBackend

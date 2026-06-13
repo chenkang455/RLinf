@@ -113,7 +113,7 @@ env:
       model: "embodied.video_progress"
       key: "avg"
       frame_interval: 4
-      support_type: "video_level"
+      reward_type: "video_level"
       model_path: "/mnt/public2/chenkang/wam_rl/video_rl/vidar/vidar-progress/assets/siglip2-so400m-patch14-384"
       checkpoint_path: "/mnt/public2/chenkang/wam_rl/video_rl/vidar/vidar-progress/assets/robotwin_progress_checkpoint-732"
       device: "cuda"

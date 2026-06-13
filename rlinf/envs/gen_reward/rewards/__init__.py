@@ -14,24 +14,29 @@
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Any
 
 import numpy as np
 import torch
 
-from rlinf.envs.gen_reward.utils import cfg_get, cfg_require, normalize_type
+from rlinf.envs.gen_reward.utils import (
+    cfg_get,
+    cfg_require,
+    media_to_uint8_nhwc,
+    normalize_type,
+)
 
 FRAME_LEVEL = "frame_level"
 VIDEO_LEVEL = "video_level"
-REWARD_SUPPORT_TYPES = (FRAME_LEVEL, VIDEO_LEVEL)
+REWARD_LEVELS = (FRAME_LEVEL, VIDEO_LEVEL)
 
 RewardOutputs = torch.Tensor | np.ndarray | list[Any]
 RewardRecords = list[dict[str, Any]]
 RewardScores = dict[str, torch.Tensor]
 
 
-class RewardBackend(Protocol):
-    """Interface for generated-output reward backends.
+class RewardBackend:
+    """Base interface for generated-output reward backends.
 
     Args:
         outputs: Generated images/videos from the rollout side.
@@ -39,66 +44,108 @@ class RewardBackend(Protocol):
 
     Returns:
         Score dict containing the configured `reward.key`, usually `avg`.
-        Score tensors should have batch dimension first. `frame_level` rewards
-        use shape [B, T]; `video_level` rewards use shape [B, 1].
+        Image rewards use shape [B]. Video rewards use shape [B, T];
+        `VideoRewardBackendBase` expands video-level scalar rewards to [T]
+        before the env maps frames to latent/action reward chunks.
     """
 
-    supported_reward_levels: tuple[str, ...]
-    support_type: str
+    supported_reward_levels = REWARD_LEVELS
+    reward_type = VIDEO_LEVEL
 
     @classmethod
     def from_config(cls, cfg: Any) -> "RewardBackend":
-        ...
+        supported = tuple(cls.supported_reward_levels)
+        reward_type = cfg_get(cfg, "reward_type", cls.reward_type)
+        if reward_type not in supported:
+            raise ValueError(
+                f"{cls.__name__} supports reward_type {supported}, "
+                f"got {reward_type}."
+            )
+
+        backend = cls._from_config(cfg)
+        backend.reward_type = reward_type
+        return backend
+
+    @classmethod
+    def _from_config(cls, cfg: Any) -> "RewardBackend":
+        raise NotImplementedError
 
     def score(
         self,
         outputs: RewardOutputs,
         records: RewardRecords,
     ) -> RewardScores:
-        ...
+        raise NotImplementedError
 
 
-def normalize_reward_support_type(value: Any) -> str:
-    support_type = str(value).lower().replace("-", "_")
-    if support_type not in REWARD_SUPPORT_TYPES:
-        raise ValueError(f"Unknown reward support_type: {support_type}")
-    return support_type
+class ImageRewardBackendBase(RewardBackend):
+    """Base helper for rewards that score one image with one scalar."""
+
+    supported_reward_levels = (VIDEO_LEVEL,)
+    reward_type = VIDEO_LEVEL
+
+    def to_image_batch(self, outputs: RewardOutputs) -> np.ndarray:
+        images = media_to_uint8_nhwc(outputs)
+        if images.ndim != 4:
+            raise ValueError(f"Expected image batch [B,H,W,C], got shape {images.shape}.")
+        return images
 
 
-def validate_reward_support(backend: RewardBackend, cfg: Any) -> RewardBackend:
-    supported = tuple(getattr(backend, "supported_reward_levels", REWARD_SUPPORT_TYPES))
-    support_type = normalize_reward_support_type(
-        cfg_get(cfg, "support_type", getattr(backend, "support_type", supported[0]))
-    )
-    if support_type not in supported:
-        raise ValueError(
-            f"{backend.__class__.__name__} supports support_type {supported}, "
-            f"got {support_type}."
-        )
-    backend.support_type = support_type
-    return backend
+class VideoRewardBackendBase(RewardBackend):
+    """Base helper for rewards that score generated videos over time."""
+
+    supported_reward_levels = (FRAME_LEVEL, VIDEO_LEVEL)
+    reward_type = FRAME_LEVEL
+
+    def to_video_batch(self, outputs: RewardOutputs) -> np.ndarray:
+        videos = media_to_uint8_nhwc(outputs)
+        if videos.ndim == 4:
+            videos = videos[:, None]
+        if videos.ndim != 5:
+            raise ValueError(f"Expected video batch [B,T,H,W,C], got shape {videos.shape}.")
+        return videos
+
+    def score(
+        self,
+        outputs: RewardOutputs,
+        records: RewardRecords,
+    ) -> RewardScores:
+        videos = self.to_video_batch(outputs)
+        score_rows = {}
+        for video, record in zip(videos, records, strict=True):
+            row_scores = self._score_video(video, record)
+            for name, reward in row_scores.items():
+                if torch.is_tensor(reward):
+                    reward_tensor = reward.detach().cpu().float().reshape(-1)
+                else:
+                    reward_tensor = torch.as_tensor(reward, dtype=torch.float32).reshape(-1)
+
+                if reward_tensor.numel() != video.shape[0]:
+                    raise ValueError(
+                        f"{name} reward must have {video.shape[0]} values, "
+                        f"got {reward_tensor.numel()}."
+                    )
+                score_rows.setdefault(name, []).append(reward_tensor)
+        return {name: torch.stack(rows).float() for name, rows in score_rows.items()}
+
+    def _score_video(
+        self,
+        video: np.ndarray,
+        record: dict[str, Any],
+    ) -> dict[str, Any]:
+        raise NotImplementedError
 
 
-def frame_rewards_to_latent_rewards(
-    frame_rewards: np.ndarray | list[float] | list[list[float]],
-    frame_interval: int,
-) -> np.ndarray:
-    frame_rewards = np.asarray(frame_rewards, dtype=np.float32)
-    if frame_interval <= 0:
-        return frame_rewards
-    chunks = [frame_rewards[..., :1]] + [
-        frame_rewards[..., i : i + frame_interval].mean(axis=-1, keepdims=True)
-        for i in range(1, frame_rewards.shape[-1], frame_interval)
-    ]
-    return np.concatenate(chunks, axis=-1).astype(np.float32)
-
-
-class MultiRewardBackend:
+class MultiRewardBackend(RewardBackend):
     def __init__(self, reward_backends: list[tuple[str, float, RewardBackend]]):
         self.reward_backends = reward_backends
 
     @classmethod
-    def from_config(cls, cfg: Any, build_single_reward_backend) -> "MultiRewardBackend":
+    def from_config(
+        cls,
+        cfg: Any,
+        build_single_reward_backend,
+    ) -> "MultiRewardBackend":
         reward_backends = []
         for reward_cfg in cfg_require(cfg, "rewards"):
             reward_model = normalize_type(cfg_require(reward_cfg, "model"))
@@ -130,12 +177,11 @@ class MultiRewardBackend:
 __all__ = [
     "FRAME_LEVEL",
     "VIDEO_LEVEL",
+    "ImageRewardBackendBase",
     "MultiRewardBackend",
     "RewardBackend",
     "RewardOutputs",
     "RewardRecords",
     "RewardScores",
-    "frame_rewards_to_latent_rewards",
-    "normalize_reward_support_type",
-    "validate_reward_support",
+    "VideoRewardBackendBase",
 ]

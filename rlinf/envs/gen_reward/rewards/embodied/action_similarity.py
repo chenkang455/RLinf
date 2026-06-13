@@ -14,102 +14,43 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 
-from rlinf.envs.gen_reward.rewards import FRAME_LEVEL, RewardBackend
-from rlinf.envs.gen_reward.rewards.embodied.models.vidar_dim import IDM
-from rlinf.envs.gen_reward.utils import cfg_get, media_to_uint8_nhwc
+from rlinf.envs.gen_reward.rewards import FRAME_LEVEL, VIDEO_LEVEL
+from rlinf.envs.gen_reward.rewards.embodied.action_prediction import (
+    ActionPredictionRewardBackend,
+)
 
 
-class ActionSimilarityRewardBackend(RewardBackend):
+class ActionSimilarityRewardBackend(ActionPredictionRewardBackend):
     """IDM-based action similarity reward for image-conditioned videos."""
 
-    supported_reward_levels = (FRAME_LEVEL,)
-    support_type = FRAME_LEVEL
+    supported_reward_levels = (FRAME_LEVEL, VIDEO_LEVEL)
+    reward_type = FRAME_LEVEL
 
-    def __init__(
+    def _score_video(
         self,
-        idm: torch.nn.Module,
-        device: torch.device,
-        temperature: float = 1.0,
-    ):
-        self.idm = idm
-        self.device = device
-        self.temperature = float(temperature)
-        self.mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
-        self.std = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
-
-    @classmethod
-    def from_config(cls, cfg: Any) -> "ActionSimilarityRewardBackend":
-        checkpoint_path = Path(str(cfg.checkpoint_path))
-        device = torch.device(
-            str(cfg_get(cfg, "device", "cuda" if torch.cuda.is_available() else "cpu"))
-        )
-        idm = IDM(model_name="mask", output_dim=14)
-        loaded = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-        idm.load_state_dict(loaded["model_state_dict"])
-        idm.to(device=device)
-        idm.eval()
-        return cls(
-            idm=idm,
-            device=device,
-            temperature=float(cfg_get(cfg, "temperature", 1.0)),
-        )
-
-    def score(
-        self,
-        outputs: torch.Tensor | np.ndarray | list[Any],
-        records: list[dict[str, Any]],
+        output_video: np.ndarray,
+        record: dict[str, Any],
     ) -> dict[str, torch.Tensor]:
-        output_videos = media_to_uint8_nhwc(outputs)
-        frame_rewards = []
-        for output_video, record in zip(output_videos, records, strict=True):
-            pred_actions = self._predict_actions(output_video)
-            target_actions = torch.as_tensor(
-                record["action"],
-                device=self.device,
-                dtype=torch.float32,
-            )
-            frame_rewards.append(
-                self._action_similarity(pred_actions, target_actions)
-                .detach()
-                .cpu()
-                .numpy()
-            )
-
-        rewards_tensor = torch.from_numpy(np.stack(frame_rewards)).float()
-        return {"avg": rewards_tensor, "action_similarity": rewards_tensor}
-
-    def _predict_actions(self, video: np.ndarray) -> torch.Tensor:
-        frames = (
-            torch.from_numpy(video).to(device=self.device, dtype=torch.float32) / 255.0
+        pred_actions = self._normalize_actions(self._predict_actions(output_video))
+        target_actions = torch.as_tensor(
+            record["action"],
+            device=self.device,
+            dtype=torch.float32,
         )
-        frames = frames.permute(0, 3, 1, 2)
-        frames = F.interpolate(
-            frames,
-            size=(518, 518),
-            mode="bilinear",
-            align_corners=False,
-        )
-        frames = (frames - self.mean) / self.std
-        with torch.inference_mode():
-            actions, _ = self.idm(frames, return_mask=False)
-        return actions.float()
-
-    def _action_similarity(
-        self,
-        pred_actions: torch.Tensor,
-        target_actions: torch.Tensor,
-    ) -> torch.Tensor:
-        pred_actions = self.idm.normalize(pred_actions)
-        target_actions = self.idm.normalize(target_actions)
+        target_actions = self._normalize_actions(target_actions)
         mse = (pred_actions - target_actions).pow(2).mean(dim=-1)
-        return torch.exp(-mse / self.temperature).clamp(0.0, 1.0)
+        frame_similarity = torch.exp(-mse / self.temperature).clamp(0.0, 1.0)
+        if self.reward_type == VIDEO_LEVEL:
+            reward = frame_similarity.mean().repeat(output_video.shape[0])
+        elif self.reward_type == FRAME_LEVEL:
+            reward = frame_similarity
+        return {"avg": reward, "action_similarity": reward}
+
 
 
 REWARD_CLS = ActionSimilarityRewardBackend

@@ -20,53 +20,45 @@ import numpy as np
 import torch
 
 from rlinf.envs.gen_reward.rewards import FRAME_LEVEL, VIDEO_LEVEL
-from rlinf.envs.gen_reward.rewards.embodied.action_similarity import (
-    ActionSimilarityRewardBackend,
+from rlinf.envs.gen_reward.rewards.embodied.action_prediction import (
+    ActionPredictionRewardBackend,
 )
-from rlinf.envs.gen_reward.utils import cfg_get, media_to_uint8_nhwc
+from rlinf.envs.gen_reward.utils import cfg_get
 
 
-class ActionSmoothnessRewardBackend(ActionSimilarityRewardBackend):
+class ActionSmoothnessRewardBackend(ActionPredictionRewardBackend):
     """EVA-style IDM action smoothness reward for generated videos."""
 
     supported_reward_levels = (FRAME_LEVEL, VIDEO_LEVEL)
-    support_type = FRAME_LEVEL
+    reward_type = FRAME_LEVEL
 
     @classmethod
-    def from_config(cls, cfg: Any) -> "ActionSmoothnessRewardBackend":
-        backend = super().from_config(cfg)
+    def _from_config(cls, cfg: Any) -> "ActionSmoothnessRewardBackend":
+        backend = super()._from_config(cfg)
         backend.dt = 1.0 / float(cfg_get(cfg, "fps", 30.0))
         backend.joint_name = cfg_get(cfg, "return_joint_name", None)
         return backend
 
-    def score(
+    def _score_video(
         self,
-        outputs: torch.Tensor | np.ndarray | list[Any],
-        records: list[dict[str, Any]],
+        output_video: np.ndarray,
+        record: dict[str, Any],
     ) -> dict[str, torch.Tensor]:
-        output_videos = media_to_uint8_nhwc(outputs)
-        rewards = []
-        action_metrics = []
-        for output_video, record in zip(output_videos, records, strict=True):
-            # smooth action reward
-            actions = self._predict_actions(output_video)
-            if self.support_type == FRAME_LEVEL:
-                reward = self._frame_action_smoothness(actions)
-            elif self.support_type == VIDEO_LEVEL:
-                reward = self._video_action_smoothness(actions).unsqueeze(0)
-            else:
-                raise ValueError(f"Unsupported action smoothness support_type: {self.support_type}")
-            rewards.append(reward.detach().cpu())
-            # action curve
-            if self.joint_name == "idm":
-                action_metrics.append(actions.detach().cpu())
-            elif self.joint_name == "gt":
-                action_metrics.append(torch.as_tensor(record["action"]).float())
+        actions = self._predict_actions(output_video)
+        if self.reward_type == VIDEO_LEVEL:
+            reward = self._video_action_smoothness(actions).repeat(output_video.shape[0])
+        elif self.reward_type == FRAME_LEVEL:
+            reward = self._frame_action_smoothness(actions)
 
-        rewards_tensor = torch.stack(rewards).float()
-        scores = {"avg": rewards_tensor, "action_smoothness": rewards_tensor}
-        if self.joint_name is not None:
-            action_tensor = torch.stack(action_metrics).float()
+        scores = {"avg": reward, "action_smoothness": reward}
+        if self.joint_name == "idm":
+            action_tensor = actions.detach().cpu()
+        elif self.joint_name == "gt":
+            action_tensor = torch.as_tensor(record["action"]).float()
+        else:
+            action_tensor = None
+
+        if action_tensor is not None:
             for joint_idx in range(action_tensor.shape[-1]):
                 scores[f"joint_{joint_idx}"] = action_tensor[..., joint_idx]
         return scores

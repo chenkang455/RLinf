@@ -21,7 +21,7 @@ import numpy as np
 import torch
 
 from . import build_reward_backend, build_reward_dataset
-from .rewards import RewardBackend, frame_rewards_to_latent_rewards
+from .rewards import RewardBackend
 from .utils import (
     cfg_get,
     cfg_require,
@@ -76,6 +76,7 @@ class GenRewardEnv(gym.Env):
         return
 
     def _next_group_indices(self) -> np.ndarray:
+        # TODO: comment for eval visual
         # if self.is_eval:
         #     start = self._cursor + self.seed_offset * self.num_group
         #     self._cursor += self.num_group * self.total_num_processes
@@ -112,9 +113,8 @@ class GenRewardEnv(gym.Env):
         rewards = scores[self.reward_key].float()
         if rewards.ndim > 1:
             rewards = torch.as_tensor(
-                frame_rewards_to_latent_rewards(
+                self._frame_rewards_to_env_steps(
                     rewards.detach().cpu().numpy(),
-                    self.frame_interval,
                 ),
                 dtype=rewards.dtype,
                 device=rewards.device,
@@ -207,3 +207,14 @@ class GenRewardEnv(gym.Env):
             terminations = terminations.unsqueeze(1)
             truncations = truncations.unsqueeze(1)
         return ([obs], rewards, terminations, truncations, [infos])
+
+    def _frame_rewards_to_env_steps(self, frame_rewards: np.ndarray) -> np.ndarray:
+        frame_rewards = np.asarray(frame_rewards, dtype=np.float32)
+        if self.frame_interval <= 0:
+            return frame_rewards
+
+        chunks = [frame_rewards[..., :1]]
+        for start in range(1, frame_rewards.shape[-1], self.frame_interval):
+            chunk = frame_rewards[..., start : start + self.frame_interval]
+            chunks.append(chunk.mean(axis=-1, keepdims=True))
+        return np.concatenate(chunks, axis=-1).astype(np.float32)

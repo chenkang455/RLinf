@@ -18,48 +18,48 @@ from typing import Any
 
 import numpy as np
 import torch
-from rlinf.envs.gen_reward.rewards import FRAME_LEVEL, RewardBackend
-from rlinf.envs.gen_reward.utils import (
-    media_to_uint8_nhwc,
-    prepare_video_pair,
+
+from rlinf.envs.gen_reward.rewards import (
+    FRAME_LEVEL,
+    VIDEO_LEVEL,
+    VideoRewardBackendBase,
 )
+from rlinf.envs.gen_reward.utils import prepare_video_pair
 
 
-class VideoSimilarityRewardBackend(RewardBackend):
+class VideoSimilarityRewardBackend(VideoRewardBackendBase):
     """Reference-video similarity reward for video generation datasets."""
 
-    supported_reward_levels = (FRAME_LEVEL,)
-    support_type = FRAME_LEVEL
+    supported_reward_levels = (FRAME_LEVEL, VIDEO_LEVEL)
+    reward_type = FRAME_LEVEL
 
     @classmethod
-    def from_config(cls, cfg: Any) -> "VideoSimilarityRewardBackend":
+    def _from_config(cls, cfg: Any) -> "VideoSimilarityRewardBackend":
         return cls()
 
-    def score(
-        self,
-        outputs: torch.Tensor | np.ndarray | list[Any],
-        records: list[dict[str, Any]],
-    ) -> dict[str, torch.Tensor]:
-        output_videos = media_to_uint8_nhwc(outputs)
-
-        frame_rewards = []
-        for output_video, record in zip(output_videos, records, strict=True):
-            output_video, target_video = prepare_video_pair(output_video, record)
-            frame_rewards.append(self._frame_similarities(output_video, target_video))
-
-        rewards_tensor = torch.from_numpy(np.stack(frame_rewards)).float()
-        return {"avg": rewards_tensor, "video_similarity": rewards_tensor}
-
-    def _frame_similarities(
+    def _score_video(
         self,
         output_video: np.ndarray,
-        target_video: np.ndarray,
-    ) -> np.ndarray:
+        record: dict[str, Any],
+    ) -> dict[str, np.ndarray]:
+        output_video, target_video = prepare_video_pair(output_video, record)
         mse = np.mean(
             (output_video.astype(np.float32) - target_video.astype(np.float32)) ** 2,
             axis=(1, 2, 3),
         )
-        return np.clip(1.0 - mse / (255.0**2), 0.0, 1.0).astype(np.float32)
+        frame_similarity = np.clip(1.0 - mse / (255.0**2), 0.0, 1.0).astype(
+            np.float32
+        )
+        if self.reward_type == VIDEO_LEVEL:
+            reward = np.full(
+                output_video.shape[0],
+                float(frame_similarity.mean()),
+                dtype=np.float32,
+            )
+        elif self.reward_type == FRAME_LEVEL:
+            reward = frame_similarity
+        return {"avg": reward, "video_similarity": reward}
+
 
 
 REWARD_CLS = VideoSimilarityRewardBackend

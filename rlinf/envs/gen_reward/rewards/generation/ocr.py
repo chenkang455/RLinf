@@ -20,15 +20,13 @@ import numpy as np
 import torch
 from PIL import Image
 
-from rlinf.envs.gen_reward.rewards import RewardBackend
-from rlinf.envs.gen_reward.utils import (
-    cfg_get,
-    extract_quoted_text,
-    media_to_uint8_nhwc,
-)
+from rlinf.envs.gen_reward.rewards import ImageRewardBackendBase
+from rlinf.envs.gen_reward.utils import cfg_get, extract_quoted_text
 
 
-class OCRRewardBackend(RewardBackend):
+class OCRScorer:
+    """OCR text matching scorer shared by image and video OCR rewards."""
+
     def __init__(self, use_gpu: bool = False, lang: str = "en"):
         try:
             from Levenshtein import distance
@@ -49,31 +47,13 @@ class OCRRewardBackend(RewardBackend):
         )
 
     @classmethod
-    def from_config(cls, cfg: Any) -> "OCRRewardBackend":
+    def from_config(cls, cfg: Any) -> "OCRScorer":
         return cls(
             use_gpu=bool(cfg_get(cfg, "use_gpu", False)),
             lang=str(cfg_get(cfg, "lang", "en")),
         )
 
-    def score(
-        self,
-        outputs: torch.Tensor | np.ndarray | list[Any],
-        records: list[dict[str, Any]],
-    ) -> dict[str, torch.Tensor]:
-        task_descriptions = [record["task_description"] for record in records]
-        image_array = media_to_uint8_nhwc(outputs)
-        rewards = []
-        for image, task_description in zip(
-            image_array,
-            task_descriptions,
-            strict=True,
-        ):
-            target = extract_quoted_text(task_description)
-            rewards.append(self._score_image(image, target))
-        rewards_tensor = torch.as_tensor(rewards, dtype=torch.float32)
-        return {"avg": rewards_tensor, "ocr": rewards_tensor}
-
-    def _score_image(
+    def score_image(
         self,
         image: np.ndarray | Image.Image,
         target: str,
@@ -102,7 +82,36 @@ class OCRRewardBackend(RewardBackend):
         return float(1.0 - dist / len(target))
 
 
+class OCRRewardBackend(ImageRewardBackendBase):
+    """Image OCR reward."""
+
+    def __init__(self, scorer: OCRScorer):
+        self.scorer = scorer
+
+    @classmethod
+    def _from_config(cls, cfg: Any) -> "OCRRewardBackend":
+        return cls(scorer=OCRScorer.from_config(cfg))
+
+    def score(
+        self,
+        outputs: torch.Tensor | np.ndarray | list[Any],
+        records: list[dict[str, Any]],
+    ) -> dict[str, torch.Tensor]:
+        task_descriptions = [record["task_description"] for record in records]
+        image_array = self.to_image_batch(outputs)
+        rewards = []
+        for image, task_description in zip(
+            image_array,
+            task_descriptions,
+            strict=True,
+        ):
+            target = extract_quoted_text(task_description)
+            rewards.append(self.scorer.score_image(image, target))
+        rewards_tensor = torch.as_tensor(rewards, dtype=torch.float32)
+        return {"avg": rewards_tensor, "ocr": rewards_tensor}
+
+
 REWARD_CLS = OCRRewardBackend
 
 
-__all__ = ["OCRRewardBackend", "REWARD_CLS"]
+__all__ = ["OCRRewardBackend", "OCRScorer", "REWARD_CLS"]

@@ -19,47 +19,44 @@ from typing import Any
 import numpy as np
 import torch
 
-from rlinf.envs.gen_reward.rewards.generation.ocr import OCRRewardBackend
-from rlinf.envs.gen_reward.utils import (
-    cfg_get,
-    extract_quoted_text,
-    media_to_uint8_nhwc,
+from rlinf.envs.gen_reward.rewards import (
+    FRAME_LEVEL,
+    VIDEO_LEVEL,
+    VideoRewardBackendBase,
 )
+from rlinf.envs.gen_reward.rewards.generation.ocr import OCRScorer
+from rlinf.envs.gen_reward.utils import extract_quoted_text
 
 
-class VideoOCRRewardBackend(OCRRewardBackend):
-    def __init__(
-        self,
-        use_gpu: bool = False,
-        lang: str = "en",
-    ):
-        super().__init__(use_gpu=use_gpu, lang=lang)
+class VideoOCRRewardBackend(VideoRewardBackendBase):
+    """Video OCR reward with frame-level or video-level output mode."""
+
+    supported_reward_levels = (FRAME_LEVEL, VIDEO_LEVEL)
+    reward_type = FRAME_LEVEL
+
+    def __init__(self, scorer: OCRScorer):
+        self.scorer = scorer
 
     @classmethod
-    def from_config(cls, cfg: Any) -> "VideoOCRRewardBackend":
-        return cls(
-            use_gpu=bool(cfg_get(cfg, "use_gpu", False)),
-            lang=str(cfg_get(cfg, "lang", "en")),
-        )
+    def _from_config(cls, cfg: Any) -> "VideoOCRRewardBackend":
+        return cls(scorer=OCRScorer.from_config(cfg))
 
-    def score(
+    def _score_video(
         self,
-        outputs: torch.Tensor | np.ndarray | list[Any],
-        records: list[dict[str, Any]],
+        media: np.ndarray,
+        record: dict[str, Any],
     ) -> dict[str, torch.Tensor]:
-        task_descriptions = [record["task_description"] for record in records]
-        media_array = media_to_uint8_nhwc(outputs)
-        frame_rewards = []
-        for media, task_description in zip(
-            media_array,
-            task_descriptions,
-            strict=True,
-        ):
-            target = extract_quoted_text(task_description)
-            frame_rewards.append([self._score_image(frame, target) for frame in media])
+        target = extract_quoted_text(record["task_description"])
+        frame_scores = torch.tensor(
+            [self.scorer.score_image(frame, target) for frame in media],
+            dtype=torch.float32,
+        )
+        if self.reward_type == VIDEO_LEVEL:
+            reward = frame_scores.mean().repeat(media.shape[0])
+        elif self.reward_type == FRAME_LEVEL:
+            reward = frame_scores
+        return {"avg": reward, "video_ocr": reward}
 
-        rewards_tensor = torch.as_tensor(frame_rewards, dtype=torch.float32)
-        return {"avg": rewards_tensor, "video_ocr": rewards_tensor}
 
 
 REWARD_CLS = VideoOCRRewardBackend
