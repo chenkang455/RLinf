@@ -102,7 +102,7 @@ class Wan22TI2VModel(Wan22Model):
         ).to(device=device, dtype=torch.float32)
         latent_outputs = self.pipeline.prepare_latents(
             image_tensor,
-            batch_size=prompt_embeds.shape[0],
+            batch_size=image_tensor.shape[0],
             num_channels_latents=self.pipeline.vae.config.z_dim,
             height=height,
             width=width,
@@ -113,6 +113,8 @@ class Wan22TI2VModel(Wan22Model):
             latents=latents,
         )
         latents, latent_condition, first_frame_mask = latent_outputs
+        if latent_condition.shape[0] != latents.shape[0]:
+            latent_condition = latent_condition[: latents.shape[0]]
         first_frame_mask = first_frame_mask.expand(
             latents.shape[0],
             *first_frame_mask.shape[1:],

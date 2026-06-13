@@ -164,10 +164,10 @@ actor:
       lora_rank: 32
       lora_alpha: 64
       lora_path: null
-      offload_auxiliary_modules: True
-      enable_vae_tiling: True
-      max_generation_batch_size: 1
-      compile_transformer_forward: False
+      offload_auxiliary_modules: False
+      enable_vae_tiling: False
+      max_generation_batch_size: 2
+      compile_transformer_forward: True
 
   optim:
     lr: 5.0e-5
