@@ -37,10 +37,12 @@ class ActionPredictionRewardBackend(VideoRewardBackendBase):
         action_model: torch.nn.Module,
         device: torch.device,
         temperature: float = 1.0,
+        batch_size: int = 16,
     ):
         self.action_model = action_model
         self.device = device
         self.temperature = float(temperature)
+        self.batch_size = int(batch_size)
         self.mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
         self.std = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
 
@@ -59,6 +61,7 @@ class ActionPredictionRewardBackend(VideoRewardBackendBase):
             action_model=action_model,
             device=device,
             temperature=float(cfg_get(cfg, "temperature", 1.0)),
+            batch_size=int(cfg_get(cfg, "batch_size", 16)),
         )
 
     def _predict_actions(self, video: np.ndarray) -> torch.Tensor:
@@ -73,9 +76,15 @@ class ActionPredictionRewardBackend(VideoRewardBackendBase):
             align_corners=False,
         )
         frames = (frames - self.mean) / self.std
+        action_chunks = []
         with torch.inference_mode():
-            actions, _ = self.action_model(frames, return_mask=False)
-        return actions.float()
+            for start in range(0, frames.shape[0], self.batch_size):
+                actions, _ = self.action_model(
+                    frames[start : start + self.batch_size],
+                    return_mask=False,
+                )
+                action_chunks.append(actions.float())
+        return torch.cat(action_chunks, dim=0)
 
     def _normalize_actions(self, actions: torch.Tensor) -> torch.Tensor:
         return self.action_model.normalize(actions)
