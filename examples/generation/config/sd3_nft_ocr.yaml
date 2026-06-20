@@ -26,7 +26,7 @@ runner:
     project_name: rlinf
     experiment_name: "ocr_nft_sd3_diffusionnft"
     logger_backends: ["tensorboard"]
-  max_epochs: 200
+  max_epochs: 70
   max_steps: -1
   only_eval: False
   val_check_interval: -1
@@ -70,7 +70,7 @@ algorithm:
   nft_weight_scale: 1.0
   nft_target_space: x0
   nft_xcur_source: resample
-  nft_tau: [1.0, 0.001, 75, 200]
+  nft_tau: [1.0, 0.01, 0, 70]
   recompute_v: False
   nft_gather_type: action_level
   nft_energy_reduction: mean
