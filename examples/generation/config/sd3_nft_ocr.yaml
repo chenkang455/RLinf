@@ -70,7 +70,7 @@ algorithm:
   nft_weight_scale: 1.0
   nft_target_space: x0
   nft_xcur_source: resample
-  nft_tau: [1.0, 0.01, 0, 70]
+  nft_tau: [1.0, 0.01, 30, 70]
   recompute_v: False
   nft_gather_type: action_level
   nft_energy_reduction: mean
