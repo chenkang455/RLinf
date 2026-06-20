@@ -1,59 +1,94 @@
 Lingbot-VLA模型强化学习
-=========================
+========================================
 
-本文档介绍如何将 Lingbot-VLA 作为原生插件接入 RLinf 框架，并在 RoboTwin 2.0 仿真环境中进行端到端的策略评估与强化学习微调。与传统的 WebSocket 通信模式不同，原生接入模式将 Lingbot-VLA 彻底融入 RLinf 的 Python 内存空间中，以实现最高效的交互与训练。
+.. figure:: https://raw.githubusercontent.com/RLinf/misc/main/pic/lingbotvla.png
+   :align: center
+   :width: 90%
 
-主要目标是让模型具备以下能力：
+   Lingbot-VLA 在 RoboTwin 上（图片来源：`RLinf <https://github.com/RLinf>`__）。
 
-* **视觉理解**：处理来自机器人相机（如头部、腕部）的多视角 RGB 图像。
-* **语言理解**：理解并泛化自然语言任务描述。
-* **动作生成**：通过大模型底座（基于 Qwen2.5-VL）直接自回归生成高维连续动作块（Action Chunks）。
-* **原生交互**：在 RLinf 框架内直接与 RoboTwin 仿真环境进行零延迟的 Tensor 级交互。
+`Lingbot-VLA <https://huggingface.co/robbyant/lingbot-vla-4b>`__ 是一个基于 Qwen2.5-VL 的
+视觉-语言-动作模型，以自回归方式生成连续动作块。RLinf 将其原生接入——嵌入 RLinf 的 Python
+内存空间，实现零延迟的 Tensor 级交互——并支持在 RoboTwin 2.0 仿真器上进行全参数 SFT 与 GRPO 微调。
 
-环境
-----
+概览
+----------------------------------------
 
-**RoboTwin 环境**
+先 SFT、再用 GRPO 微调 Lingbot-VLA，完成 RoboTwin 2.0 双臂操作任务。
 
-* **Environment**：基于 Sapien 的 RoboTwin 2.0 物理仿真基准。
-* **Task**：指挥 ALOHA 等双臂/单臂机器人完成复杂家居与操作技能（如 ``click_bell``, ``open_microwave``, ``stack_blocks_three`` 等）。
-* **Observation**：多相机视角采集的 RGB 图像。
-* **Action Space**：14 维连续动作（以双臂 ALOHA 为例），包含双臂的绝对位姿（x, y, z, roll, pitch, yaw）及夹爪开合度。
+.. grid:: 2 4 4 4
+   :gutter: 2
 
-任务描述格式
-------------
+   .. grid-item-card:: 环境
+      :text-align: center
 
-Lingbot-VLA 直接使用环境提供的自然语言任务描述作为视觉语言大模型（VLM）的文本 Prompt 输入。
+      RoboTwin 2.0
 
-数据结构
---------
+   .. grid-item-card:: 算法
+      :text-align: center
 
-* **Images**：主视角（Head）与左右腕部（Wrist）视角的 RGB 图像。
-* **Task Descriptions**：自然语言指令（如 "click the bell"）。
-* **Actions**：长度为 50（可配置）的动作块（Action Chunks），采用基于历史观测的开环/闭环执行策略。
+      SFT · GRPO
 
-算法
-----
+   .. grid-item-card:: 任务
+      :text-align: center
 
-**核心算法组件**
+      Click Bell · Place Shoe
 
-* **GRPO (Group Relative Policy Optimization)**
-    * 基于组内相对奖励的优势估计。
-    * 带比例限制的策略裁剪。
-    * KL 散度正则化。
+   .. grid-item-card:: 硬件
+      :text-align: center
 
-* **Lingbot-VLA (基于 Qwen2.5-VL)**
-    * 通过视觉语言大模型底座自回归生成动作块。
-    * 基于 Flow-SDE (随机微分方程) 的动作去噪与生成。
-    * 支持配置 ``noise_method``（如 ``flow_sde``）、``noise_level`` 和 ``num_steps`` 等去噪参数。
+      1–2 节点 · 8–16 GPU
 
-依赖安装
---------
+| **你将完成：** 原生安装 → 克隆 RoboTwin 与资产 → 下载检查点 → SFT → GRPO → 观察 ``env/success_once``。
+| **前置条件：** :doc:`安装 </rst_source/start/installation>` · RoboTwin 仓库与资产 · Lingbot-VLA 与 Qwen 底座检查点（见下文步骤）。
+
+任务
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+根据环境、任务族以及配置或权重工件选择对应的模型页面。
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 24 30 24
+
+   * - 环境
+     - 任务 / 套件
+     - 配置 / 权重
+     - 重点
+   * - RoboTwin
+     - Click Bell
+     - ``robotwin_click_bell_grpo_lingbotvla``
+     - 在 RoboTwin 操作任务上使用 LingbotVLA 运行 GRPO。
+   * - RoboTwin
+     - Place Shoe
+     - ``robotwin_place_shoe_grpo_lingbotvla``
+     - 在第二个 RoboTwin 任务变体上运行 GRPO。
+
+观测与动作
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. list-table::
+   :header-rows: 1
+   :widths: 24 38
+
+   * - 字段
+     - 说明
+   * - Observation
+     - LingbotVLA 所需的 RoboTwin 相机观测与机器人状态。
+   * - Action
+     - LingbotVLA 策略解码出的连续机器人动作。
+   * - Reward
+     - RoboTwin 任务成功信号或 shaped task reward。
+   * - Prompt
+     - RoboTwin episode 的自然语言任务指令。
+
+安装
+----------------------------------------
 
 为了实现高版本 Torch (2.8.0) 与 RLinf (Python 3.10) 的完美兼容，我们已将复杂的依赖隔离逻辑封装至安装脚本中。请按以下步骤构建混合环境。
 
 1. 克隆 RLinf 仓库
-~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 首先克隆 RLinf 仓库并进入主目录：
 
@@ -64,7 +99,7 @@ Lingbot-VLA 直接使用环境提供的自然语言任务描述作为视觉语�
     export RLINF_PATH=$(pwd)
 
 2. 安装依赖
-~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 **选项 1：Docker 镜像**
 
@@ -77,7 +112,7 @@ Lingbot-VLA 直接使用环境提供的自然语言任务描述作为视觉语�
       --network host \
       --name rlinf \
       -v .:/workspace/RLinf \
-      rlinf/rlinf:embodied-rlinf0.1-robotwin
+      rlinf/rlinf:agentic-rlinf0.2-robotwin
 
 请通过镜像内置的 `switch_env` 工具切换到对应的虚拟环境：
 
@@ -95,7 +130,7 @@ Lingbot-VLA 直接使用环境提供的自然语言任务描述作为视觉语�
     source .venv/bin/activate
 
 RoboTwin 仓库克隆与资产下载
----------------------------
+----------------------------------------
 
 RoboTwin Assets 是 RoboTwin 环境运行所需的资源文件，需要从 HuggingFace 下载。
 
@@ -107,31 +142,38 @@ RoboTwin Assets 是 RoboTwin 环境运行所需的资源文件，需要从 Huggi
    # 2. 下载并解压 Assets 文件
    bash script/_download_assets.sh
 
-模型下载
---------
+下载模型
+----------------------------------------
 
-开始训练前，请从 HuggingFace 下载 Lingbot-VLA 基础权重和 Qwen 底座模型：
+开始训练前，请从 HuggingFace 下载 Lingbot-VLA 基础权重、RoboTwin SFT 权重和 Qwen 底座模型。进行 RoboTwin SFT 或强化学习实验时，请使用下面固定 revision 的 RoboTwin SFT 权重，不要直接使用 HuggingFace ``main`` 分支的最新权重。
 
 .. code-block:: bash
 
     # 方法 1：使用 git clone
     git lfs install
     git clone https://huggingface.co/robbyant/lingbot-vla-4b
+    git clone https://huggingface.co/robbyant/lingbot-vla-4b-posttrain-robotwin
+    cd lingbot-vla-4b-posttrain-robotwin
+    git checkout 3e0c7c476bde3daaac00f79f3741a292a299f60a
+    cd ..
     git clone https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct
 
     # 方法 2：使用 huggingface-hub
     pip install huggingface-hub
     huggingface-cli download robbyant/lingbot-vla-4b --local-dir lingbot-vla-4b
+    huggingface-cli download robbyant/lingbot-vla-4b-posttrain-robotwin \
+        --revision 3e0c7c476bde3daaac00f79f3741a292a299f60a \
+        --local-dir lingbot-vla-4b-posttrain-robotwin
     huggingface-cli download Qwen/Qwen2.5-VL-3B-Instruct --local-dir Qwen2.5-VL-3B-Instruct
 
 
-然后在配置中将 ``rollout.model.model_path`` 和 ``actor.model.model_path`` 设为本地模型路径（如 ``/path/to/model/lingbot-vla-4b`` 或 ``./lingbot-vla-4b``），并**务必**将对应的 ``tokenizer_path`` 设为下载的 Tokenizer 路径（如 ``/path/to/model/Qwen2.5-VL-3B-Instruct``），否则 Rollout 节点在解析文本指令时会报错。
+然后在配置中将 ``rollout.model.model_path`` 和 ``actor.model.model_path`` 设为本地模型路径（如基础权重 ``/path/to/model/lingbot-vla-4b``，或固定 revision 的 RoboTwin SFT 权重 ``/path/to/model/lingbot-vla-4b-posttrain-robotwin``），并务必将对应的 ``tokenizer_path`` 设为下载的 Tokenizer 路径（如 ``/path/to/model/Qwen2.5-VL-3B-Instruct``），否则 Rollout 节点在解析文本指令时会报错。
 
-快速开始
---------
+运行
+----------------------------------------
 
 配置文件
-~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 RLinf 支持对 Lingbot-VLA 进行全参监督微调（SFT）与强化学习对齐（GRPO）。相关配置文件如下：
 
@@ -141,7 +183,7 @@ RLinf 支持对 Lingbot-VLA 进行全参监督微调（SFT）与强化学习对�
   ``examples/embodiment/config/robotwin_click_bell_grpo_lingbotvla.yaml``
 
 关键配置片段 (SFT)
-^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 SFT 阶段的核心在于指定离线数据集格式（LeRobot Parquet 格式）、FSDP 训练后端以及批次大小。
 
@@ -168,7 +210,7 @@ SFT 阶段的核心在于指定离线数据集格式（LeRobot Parquet 格式）
         action_dim: 14
 
 关键配置片段 (GRPO)
-^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 GRPO 顶层文件通过 Hydra 动态组装了环境与模型，并直接在 ``actor.model`` 下覆写了强化学习所需的核心 SDE 采样参数。
 
@@ -179,7 +221,7 @@ GRPO 顶层文件通过 Hydra 动态组装了环境与模型，并直接在 ``ac
     rollout:
       model:
         model_type: "lingbotvla"
-        
+
 
     actor:
       model:
@@ -190,14 +232,14 @@ GRPO 顶层文件通过 Hydra 动态组装了环境与模型，并直接在 ``ac
             config_path: "/path/to/lingbot-vla-4b"
         action_dim: 14
         num_action_chunks: 50
-        num_steps: 10              
-        noise_method: "flow_sde"   
-        noise_level: 0.5           
-        action_env_dim: 14         
+        num_steps: 10
+        noise_method: "flow_sde"
+        noise_level: 0.5
+        action_env_dim: 14
 
 
 启动命令
-~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 要使用选定的配置开始训练，请运行相应的启动脚本。
 
@@ -228,28 +270,28 @@ GRPO 顶层文件通过 Hydra 动态组装了环境与模型，并直接在 ``ac
 
     bash examples/embodiment/run_embodiment.sh robotwin_click_bell_grpo_lingbotvla
 
-评估
-----
+独立评测
+----------------------------------------
 
-Lingbot-VLA 在 RoboTwin 环境中提供了针对各项任务的端到端评估脚本（以按铃任务为例）：
-
-.. code-block:: bash
-
-    export ROBOT_PLATFORM="ALOHA"
-    bash examples/embodiment/eval_embodiment.sh robotwin_click_bell_grpo_lingbotvla_eval
-
-如需了解 RLinf 统一的 VLA 评估流程，请参考 :doc:`VLA 评估文档 <../../start/vla-eval>`。
+独立评估请走 :doc:`RoboTwin 评测指南 <../../evaluations/guides/robotwin>`。
+使用 Lingbot-VLA 评测配置，例如 ``robotwin_click_bell_lingbotvla_eval`` 和
+``robotwin_place_shoe_lingbotvla_eval``；该指南负责 ``ROBOT_PLATFORM=ALOHA``、
+``ROBOTWIN_PATH``、assets、启动命令和结果解读。
 
 可视化与结果
-------------
+----------------------------------------
 
-**TensorBoard 日志**
+启动 TensorBoard 实时查看训练：
 
 .. code-block:: bash
 
     tensorboard --logdir ../results --port 6006
 
-**关键指标**
+最值得关注的指标是 **``env/success_once``** —— 回合成功率。每个日志指标的含义见
+:doc:`训练指标 <../../reference/metrics>`。
 
-* **训练**: ``train/actor/policy_loss``, ``train/actor/entropy_loss``, ``train/actor/approx_kl``
-* **环境**: ``env/success_once`` (回合成功率), ``env/episode_len``, ``env/reward``
+.. figure:: https://raw.githubusercontent.com/RLinf/misc/main/pic/lingbotvla_success_once.png
+   :width: 95%
+   :align: center
+
+   GRPO 在 RoboTwin Click Bell 任务上提升 ``env/success_once``。
