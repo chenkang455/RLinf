@@ -24,7 +24,7 @@ runner:
   logger:
     log_path: "../results"
     project_name: rlinf
-    experiment_name: "ocr_video_wan22_ti2v_5b_g6_re12_tau05_70_clip01_lr3e4"
+    experiment_name: "ocr_video_wan22_ti2v_5b_5frame_g6_re12_tau05_70_clip01_lr3e4"
     logger_backends: ["tensorboard"]
   max_epochs: 70
   max_steps: -1
@@ -39,7 +39,7 @@ algorithm:
   kl_penalty: kl
   kl_penalty_type: kl
 
-  group_size: 24
+  group_size: 8
   reward_coef: 1.0
   rollout_epoch: 6
   eval_rollout_epoch: 8
@@ -70,7 +70,7 @@ algorithm:
   nft_weight_scale: 1.0
   nft_target_space: x0
   nft_xcur_source: resample
-  nft_tau: 1.0
+  nft_tau: [1.0, 0.01, 0, 70]
   nft_clip_ratio: 0.1
   recompute_v: False
   nft_gather_type: action_level
@@ -96,7 +96,7 @@ env:
     total_num_envs: 192
     group_size: ${algorithm.group_size}
     max_episode_steps: 1
-    max_steps_per_rollout_epoch: 5
+    max_steps_per_rollout_epoch: 2
     video_cfg:
       save_video: False
     dataset:
@@ -107,14 +107,14 @@ env:
       type: "single"
       model: "generation.video_ocr"
       key: "avg"
-      use_gpu: False
+      use_gpu: True
       lang: "en"
       frame_interval: 4
   eval:
     total_num_envs: 128
     group_size: 1
     max_episode_steps: 1
-    max_steps_per_rollout_epoch: 5
+    max_steps_per_rollout_epoch: 2
     is_eval: True
     dataset:
       type: "generation.ocr_dataset"
@@ -124,7 +124,7 @@ env:
       type: "single"
       model: "generation.video_ocr"
       key: "avg"
-      use_gpu: False
+      use_gpu: True
       lang: "en"
       frame_interval: 4
 
@@ -152,12 +152,12 @@ actor:
     model_path: "/mnt/public2/chenkang/wam_rl/checkpoints/Wan2.2-TI2V-5B-Diffusers"
     precision: "bf16"
     # 1 first-frame chunk + ceil((num_frames - 1) / frame_interval).
-    num_action_chunks: 5
+    num_action_chunks: 2
     wan22_ti2v_5b:
       condition_mode: "t2v"
       rl_mode: nft
       resolution: [512, 512]
-      num_frames: 17
+      num_frames: 5
       num_steps: 10
       eval_num_steps: 20
       timestep_fraction: 0.99
